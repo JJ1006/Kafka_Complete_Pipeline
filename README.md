@@ -4,8 +4,7 @@
 
 **A production-grade, cloud-native pipeline for real-time credit transaction ingestion, processing, and analytics.**
 
-[![CI](https://github.com/JJ1006/Kafka_Complete_Pipeline/actions/workflows/ci.yaml/badge.svg)](https://github.com/JJ1006/Kafka_Complete_Pipeline/actions/workflows/ci.yaml)
-[![CD](https://github.com/JJ1006/Kafka_Complete_Pipeline/actions/workflows/cd.yaml/badge.svg)](https://github.com/JJ1006/Kafka_Complete_Pipeline/actions/workflows/cd.yaml)
+[![Pipeline](https://github.com/JJ1006/Kafka_Complete_Pipeline/actions/workflows/pipeline.yaml/badge.svg)](https://github.com/JJ1006/Kafka_Complete_Pipeline/actions/workflows/pipeline.yaml)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
