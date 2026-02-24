@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class TransactionCreate(BaseModel):
@@ -59,10 +59,8 @@ class TransactionCreate(BaseModel):
             raise ValueError("Maximum 2 decimal places allowed")
         return f
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "application_number": "APP001",
                 "request_id": "REQ001",
@@ -77,6 +75,7 @@ class TransactionCreate(BaseModel):
                 "existing_debt": 10000.00,
             }
         }
+    )
 
 
 class TransactionResponse(BaseModel):

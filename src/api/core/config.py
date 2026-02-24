@@ -3,7 +3,7 @@
 from functools import lru_cache
 
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -60,11 +60,11 @@ class Settings(BaseSettings):
     range_max_days: int = Field(default=90, alias="RANGE_MAX_DAYS")
     stream_chunk_size: int = Field(default=1000, alias="STREAM_CHUNK_SIZE")
 
-    class Config:
-        """Pydantic config."""
-
-        env_file = ".env"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        populate_by_name=True,
+    )
 
 
 @lru_cache
