@@ -13,8 +13,10 @@ from fastapi.responses import JSONResponse
 from src.api.core.config import get_settings
 from src.api.core.logging import configure_logging, get_logger
 from src.api.models import ErrorResponse
-from src.api.routers import health, transactions
+from src.api.routers import health, transactions, query
+from src.api.services.cache_service import CacheService
 from src.api.services.dedup_service import RedisDeduplicationService
+from src.api.services.elasticsearch_service import ElasticsearchService
 from src.api.services.kafka_producer import KafkaProducerService
 
 logger = get_logger(__name__)
@@ -38,11 +40,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize services
     dedup_service = RedisDeduplicationService(settings)
     kafka_producer = KafkaProducerService(settings)
+    elasticsearch_service = ElasticsearchService(settings)
+    cache_service = CacheService(settings)
 
     try:
         await dedup_service.connect()
         await kafka_producer.connect()
+        await elasticsearch_service.connect()
+        await cache_service.connect()
+        
         transactions.set_services(dedup_service, kafka_producer)
+        query.set_services(elasticsearch_service, cache_service)
+        
         logger.info("all_services_initialized")
     except Exception as e:
         logger.error("service_initialization_failed", error=str(e), exc_info=True)
@@ -54,6 +63,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("app_shutdown", message="Gracefully closing connections")
     await dedup_service.disconnect()
     await kafka_producer.disconnect()
+    await elasticsearch_service.disconnect()
+    await cache_service.disconnect()
 
 
 def create_app() -> FastAPI:
@@ -93,6 +104,7 @@ def create_app() -> FastAPI:
     # Route registration
     app.include_router(health.router)
     app.include_router(transactions.router)
+    app.include_router(query.router)
 
     # Exception handlers
     @app.exception_handler(RequestValidationError)
