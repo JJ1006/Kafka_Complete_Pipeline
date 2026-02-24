@@ -1,0 +1,329 @@
+# ============================================================
+#  Credit Transaction Platform — Unified CI/CD Pipeline
+#
+#  Jobs run in this order based on branch/trigger:
+#
+#  All pushes / PRs:
+#    lint → test → docker-build → trivy-scan
+#
+#  Push to main only (additionally):
+#    → deploy (update Helm values.yaml → triggers ArgoCD)
+#
+#  Scheduled (weekly, Monday 09:00 UTC):
+#    → dependency-update (Renovate-style auto-PR via gh CLI)
+# ============================================================
+name: Pipeline
+
+on:
+  push:
+    branches: [main, develop, "feature/**", "fix/**", "hotfix/**"]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Weekly dependency update scan — every Monday at 09:00 UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Skip unit tests (emergency deploy only)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+# Cancel in-progress runs on new push to same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  REGISTRY: ghcr.io
+  # Force lowercase — GHCR requires all-lowercase image names
+  IMAGE_REPO: ${{ github.repository_owner }}
+  IMAGE_NAME: "credit-api"
+
+# ─────────────────────────────────────────────────────────────
+# JOB 1 — Lint, Format & Type Check
+# ─────────────────────────────────────────────────────────────
+jobs:
+  lint:
+    name: "🔍 Lint & Type Check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check src/ tests/ --output-format=github
+
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
+
+      - name: Mypy type check
+        run: mypy src/ --ignore-missing-imports --no-strict-optional
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2 — Unit Tests + Coverage
+  # ─────────────────────────────────────────────────────────────
+  test:
+    name: "🧪 Unit Tests"
+    needs: lint
+    runs-on: ubuntu-latest
+    if: ${{ inputs.skip_tests != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/unit/ -v \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --tb=short
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3 — Build & Push Docker Image
+  # ─────────────────────────────────────────────────────────────
+  docker-build:
+    name: "🐳 Build & Push Image"
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.fullname }}
+      digest: ${{ steps.build.outputs.digest }}
+      sha-tag: ${{ steps.sha.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Derive lowercase image ref (GHCR is case-sensitive)
+      - name: Compute image name (lowercase)
+        id: image
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          FULLNAME="${{ env.REGISTRY }}/${OWNER}/${{ env.IMAGE_NAME }}"
+          echo "fullname=${FULLNAME}" >> "$GITHUB_OUTPUT"
+          SHA_TAG="${FULLNAME}:${{ github.sha }}"
+          echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Short SHA tag
+        id: sha
+        run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.fullname }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=ref,event=pr
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+          provenance: true
+          sbom: true
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4 — Trivy Security Scan
+  # ─────────────────────────────────────────────────────────────
+  trivy-scan:
+    name: "🛡️ Security Scan (Trivy)"
+    needs: docker-build
+    runs-on: ubuntu-latest
+    # Only scan on pushes (image was actually pushed)
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy on pushed image
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ needs.docker-build.outputs.image }}:latest
+          format: sarif
+          output: trivy-results.sarif
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 5 — Deploy (main branch only)
+  #          Updates Helm values.yaml → ArgoCD auto-syncs
+  # ─────────────────────────────────────────────────────────────
+  deploy:
+    name: "🚀 Deploy to Kubernetes"
+    needs: [docker-build, trivy-scan]
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install yq
+        run: |
+          wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Check if Helm chart values exist
+        id: helm-check
+        run: |
+          if [ -f infrastructure/helm/credit-api/values.yaml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Helm chart not found, skipping values update"
+          fi
+
+      - name: Update Helm chart image tag
+        if: steps.helm-check.outputs.exists == 'true'
+        run: |
+          SHORT_SHA="${{ needs.docker-build.outputs.sha-tag }}"
+          yq e ".image.tag = \"${SHORT_SHA}\"" \
+            -i infrastructure/helm/credit-api/values.yaml
+          yq e ".image.repository = \"${{ needs.docker-build.outputs.image }}\"" \
+            -i infrastructure/helm/credit-api/values.yaml
+
+      - name: Commit and push updated values.yaml
+        if: steps.helm-check.outputs.exists == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add infrastructure/helm/credit-api/values.yaml
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(deploy): update credit-api image to ${{ needs.docker-build.outputs.sha-tag }} [skip ci]"
+            git push
+          fi
+
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo ""                         >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |"          >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|"                >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${{ needs.docker-build.outputs.image }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | \`sha-${{ needs.docker-build.outputs.sha-tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Digest | \`${{ needs.docker-build.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| GitOps | ArgoCD will auto-sync from Helm chart |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 6 — Dependency Updates (weekly, replaces Dependabot)
+  #          Uses Renovate action to open auto-PRs
+  # ─────────────────────────────────────────────────────────────
+  dependency-update:
+    name: "📦 Dependency Update Check"
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Check for outdated pip packages
+        id: pip-check
+        run: |
+          pip install -e ".[dev,test]" -q
+          pip list --outdated --format=columns 2>&1 | tee outdated.txt
+          cat outdated.txt
+
+      - name: Update pip-tools locked requirements
+        run: |
+          pip install pip-tools -q
+          # Compile fresh requirements if pip-tools is in use
+          if [ -f requirements.in ]; then
+            pip-compile requirements.in --upgrade -o requirements.txt
+            echo "Requirements recompiled"
+          else
+            echo "No requirements.in found — skipping pip-compile"
+          fi
+
+      - name: Open PR with dependency updates
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(deps): weekly dependency update"
+          title: "chore(deps): weekly dependency update"
+          body: |
+            ## 📦 Automated Dependency Update
+
+            This PR was opened automatically by the weekly pipeline run.
+
+            ### Outdated packages detected:
+            ```
+            $(cat outdated.txt 2>/dev/null || echo "None detected")
+            ```
+
+            Please review, run tests locally, and merge if CI passes.
+          branch: "chore/weekly-dep-update"
+          delete-branch: true
+          labels: "dependencies,automated"
+          assignees: ${{ github.repository_owner }}

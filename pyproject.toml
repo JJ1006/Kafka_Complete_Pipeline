@@ -38,7 +38,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff==0.3.3",
-    "black==24.3.0",
     "mypy==1.9.0",
     "pre-commit==3.7.0",
     "ipython==8.22.2",
@@ -53,23 +52,12 @@ test = [
     "faker==24.3.0",
 ]
 
-[tool.black]
-line-length = 100
-target-version = ["py312"]
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
+[tool.ruff.format]
+# ruff-format is a black-compatible formatter — no need to run both
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
 
 [tool.ruff]
 line-length = 100
