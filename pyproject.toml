@@ -50,7 +50,7 @@ test = [
     "pytest-mock==3.14.0",
     "testcontainers==4.4.0",
     "factory-boy==3.3.0",
-    "faker==24.3.0",
+    "faker==24.14.1",
 ]
 
 [tool.black]
