@@ -98,7 +98,7 @@ class TransactionResponse(BaseModel):
     source: str
 
 
-class PaginatedResponse(BaseModel):  # type: ignore[misc]
+class PaginatedResponse(BaseModel):
     """Generic paginated response wrapper."""
 
     data: list[Any]

@@ -1,15 +1,17 @@
 """FastAPI application factory and startup/shutdown management."""
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import RequestResponseEndpoint
 
 from src.api.core.config import get_settings
 from src.api.core.logging import configure_logging, get_logger
@@ -128,7 +130,9 @@ def create_app() -> FastAPI:
 
     # Trace context extraction middleware
     @app.middleware("http")
-    async def trace_context_middleware(request: Request, call_next):
+    async def trace_context_middleware(
+        request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         """Extract W3C trace context from incoming requests."""
         extract_trace_context(dict(request.headers))
         response = await call_next(request)
@@ -206,8 +210,6 @@ def create_app() -> FastAPI:
         return {"message": "Credit Transaction Platform API", "docs": "/docs", "ui": "/ui"}
 
     # ── Static files & SPA catch-all ──────────────────────────────────────────
-    import os
-
     _spa_dir = os.path.join(os.path.dirname(__file__), "..", "..", "web", "static")
     _spa_index = os.path.join(_spa_dir, "index.html")
     if os.path.isdir(_spa_dir):
@@ -216,7 +218,7 @@ def create_app() -> FastAPI:
 
     @app.get("/ui", include_in_schema=False)
     @app.get("/ui/{path:path}", include_in_schema=False)
-    async def serve_spa(path: str = "") -> FileResponse:
+    async def serve_spa(path: str = "") -> FileResponse | JSONResponse:
         """Serve the Vue 3 SPA for all /ui/* routes (client-side routing)."""
         if os.path.isfile(_spa_index):
             return FileResponse(_spa_index, media_type="text/html")

@@ -1,8 +1,9 @@
 """Query and retrieval routers for credit transactions."""
 
 import io
+from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -125,7 +126,7 @@ async def get_transaction(
             trace_id=trace_id,
         )
 
-        return tx
+        return tx  # type: ignore[no-any-return]
 
     except HTTPException:
         raise
@@ -224,7 +225,7 @@ async def list_transactions(
             trace_id=trace_id,
         )
 
-        return result
+        return result  # type: ignore[no-any-return]
 
     except Exception as e:
         logger.error(
@@ -294,7 +295,7 @@ async def range_query(
             )
 
         # Build filters
-        filters = {}
+        filters: dict[str, Any] = {}
         if employment_type:
             filters["employment_type"] = employment_type
         if product_type:
@@ -435,7 +436,7 @@ async def download_transactions(
             )
 
         # Build filters
-        filters = {}
+        filters: dict[str, Any] = {}
         if employment_type:
             filters["employment_type"] = employment_type
         if product_type:
@@ -502,8 +503,8 @@ async def generate_csv(
     es_service: ElasticsearchService,
     from_date: datetime,
     to_date: datetime,
-    filters: dict,
-):
+    filters: dict[str, Any],
+) -> AsyncGenerator[str, None]:
     """Generate CSV stream from Elasticsearch scroll.
 
     Yields: Line strings (not bytes) - FastAPI converts to bytes.
@@ -567,8 +568,8 @@ async def generate_jsonl(
     es_service: ElasticsearchService,
     from_date: datetime,
     to_date: datetime,
-    filters: dict,
-):
+    filters: dict[str, Any],
+) -> AsyncGenerator[str, None]:
     """Generate JSONL stream from Elasticsearch scroll.
 
     Yields: Line strings (newline-delimited JSON).

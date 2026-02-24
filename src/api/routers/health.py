@@ -21,7 +21,9 @@ async def health_check() -> HealthResponse:
     Raises:
         HTTPException: If any critical dependency is down.
     """
-    dependencies = {
+    from typing import Any
+
+    dependencies: dict[str, dict[str, Any]] = {
         "kafka": {"status": "unknown", "latency_ms": None},
         "elasticsearch": {"status": "unknown", "latency_ms": None},
         "redis": {"status": "unknown", "latency_ms": None},

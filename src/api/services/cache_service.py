@@ -45,6 +45,7 @@ class CacheService:
             )
 
             # Test connectivity
+            assert self.client is not None
             await self.client.ping()
             logger.info("redis_cache_connected", redis_url=self.settings.redis_url)
 
@@ -87,19 +88,19 @@ class CacheService:
             Parsed JSON dict or None if not found or Redis unavailable.
         """
         if not self.client:
-            record_cache_access(endpoint="query", operation="get", hit=False)
+            record_cache_access(endpoint="query", operation="get", is_hit=False)
             return None
 
         try:
             value = await self.client.get(key)
             if value:
-                record_cache_access(endpoint="query", operation="get", hit=True)
+                record_cache_access(endpoint="query", operation="get", is_hit=True)
                 return json.loads(value)
-            record_cache_access(endpoint="query", operation="get", hit=False)
+            record_cache_access(endpoint="query", operation="get", is_hit=False)
             return None
         except Exception as e:
             logger.warning("cache_get_error", key=key, error=str(e))
-            record_cache_access(endpoint="query", operation="get", hit=False)
+            record_cache_access(endpoint="query", operation="get", is_hit=False)
             return None
 
     @traced_operation("cache.set_cached")

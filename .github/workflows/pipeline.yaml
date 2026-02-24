@@ -31,10 +31,10 @@ on:
         type: choice
         options: ["false", "true"]
 
-# Cancel in-progress runs on new push to same branch
+# Cancel in-progress runs on new push — but NEVER on main (every commit must deploy)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   PYTHON_VERSION: "3.12"

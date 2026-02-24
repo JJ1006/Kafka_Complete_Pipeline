@@ -24,7 +24,7 @@ class RedisDeduplicationService:
             settings: Application settings with REDIS_URL.
         """
         self.settings = settings
-        self.client: redis.Redis[bytes] | None = None
+        self.client: redis.Redis | None = None
 
     async def connect(self) -> None:
         """Connect to Redis."""

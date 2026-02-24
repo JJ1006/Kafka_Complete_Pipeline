@@ -196,7 +196,7 @@ async def ingest_transaction(
 
         # Build response
         composite_key = f"{transaction.application_number}:{request_id}"
-        ingested_at = datetime.now(UTC).isoformat()
+        ingested_at = datetime.now(UTC)
 
         response = IngestResponse(
             composite_key=composite_key,

@@ -1,5 +1,6 @@
 """Prometheus metrics and instrumentation for monitoring."""
 
+from fastapi import FastAPI
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_fastapi_instrumentator.metrics import default
@@ -101,7 +102,7 @@ ingest_latency_seconds = Histogram(
 # ================== Instrumentation Setup ==================
 
 
-def setup_prometheus_instrumentation(app) -> Instrumentator:
+def setup_prometheus_instrumentation(app: FastAPI) -> Instrumentator:
     """Configure Prometheus instrumentation for FastAPI.
 
     Includes default metrics (requests, errors, latency) plus custom metrics.
@@ -113,12 +114,12 @@ def setup_prometheus_instrumentation(app) -> Instrumentator:
         Configured Instrumentator instance.
     """
     instrumentator = Instrumentator(
-        should_group_paths=True,  # Group /path/{id} as single metric
+        should_group_untemplated=True,  # Group /path/{id} as single metric
         should_ignore_untemplated=True,  # Ignore metrics for paths without templates
     )
 
-    # Add default metrics (request count, error rate, latency, etc.) — v7.x API
-    instrumentator.add(default(response_duration_buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5)))
+    # Add default metrics (request count, error rate, latency, etc.)
+    instrumentator.add(default())
 
     # Instrument the app
     instrumentator.instrument(app).expose(app, should_gzip=True, name="metrics")

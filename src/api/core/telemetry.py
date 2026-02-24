@@ -112,7 +112,7 @@ def instrument_fastapi(app: Any) -> None:
         # Instrument FastAPI (excludes health check from tracing noise)
         FastAPIInstrumentor.instrument_app(
             app,
-            excluded_urls=["/health", "/docs", "/redoc", "/openapi.json", "/metrics"],
+            excluded_urls="/health,/docs,/redoc,/openapi.json,/metrics",
         )
         logger.info("fastapi_instrumentation_enabled")
     except Exception as e:
@@ -262,7 +262,8 @@ def inject_trace_context(headers: dict[str, Any]) -> dict[str, Any]:
     """
     from opentelemetry.propagate import inject as otel_inject
 
-    return otel_inject(headers)
+    otel_inject(headers)
+    return headers
 
 
 def extract_trace_context(headers: dict[str, Any]) -> None:

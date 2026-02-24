@@ -1,5 +1,6 @@
 """Async Elasticsearch query service for credit transactions."""
 
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
 
@@ -413,7 +414,7 @@ class ElasticsearchService:
         from_date: datetime,
         to_date: datetime,
         filters: dict[str, Any] | None = None,
-    ):
+    ) -> AsyncGenerator[TransactionResponse, None]:
         """Generator for streaming large result sets without buffering.
 
         Yields one transaction at a time using Elasticsearch scroll API.

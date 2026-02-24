@@ -90,8 +90,35 @@ module = [
     "elasticsearch.*",
     "redis.*",
     "opentelemetry.*",
+    "prometheus_client.*",
+    "prometheus_fastapi_instrumentator.*",
+    "structlog.*",
+    "slowapi.*",
+    "passlib.*",
+    "jose.*",
+    "starlette.*",
 ]
 ignore_missing_imports = true
+
+# OTel and metrics modules use complex generics from optional packages —
+# disable the strictest checks where stubs are incomplete or environment-specific
+[[tool.mypy.overrides]]
+module = [
+    "src.api.core.telemetry",
+    "src.api.core.metrics",
+]
+warn_unused_ignores = false
+disallow_untyped_defs = false
+warn_return_any = false
+
+# Services using Redis async generics behave differently per redis-py version
+[[tool.mypy.overrides]]
+module = [
+    "src.api.services.dedup_service",
+    "src.api.services.cache_service",
+]
+disallow_untyped_defs = false
+warn_return_any = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
