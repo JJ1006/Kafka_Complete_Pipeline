@@ -143,6 +143,48 @@ resource "helm_release" "schema_registry" {
   depends_on = [helm_release.kafka]
 }
 
+# Logstash
+resource "helm_release" "logstash" {
+  name       = "logstash"
+  repository = "https://charts.bitnami.com/bitnami"
+  chart      = "logstash"
+  namespace  = kubernetes_namespace.data_pipeline.metadata[0].name
+  version    = var.logstash_chart_version
+
+  values = [
+    yamlencode({
+      replicaCount = 2
+      persistence = {
+        enabled = false
+      }
+      logstashConfig = {
+        logstash = {
+          yml = ""
+        }
+      }
+      logstashPipeline = {
+        logstashfile = file("${path.module}/../logstash/pipeline/credit_transactions.conf")
+      }
+      env = {
+        KAFKA_BOOTSTRAP_SERVERS = "kafka-0.kafka-headless.data-pipeline.svc.cluster.local:9092,kafka-1.kafka-headless.data-pipeline.svc.cluster.local:9092,kafka-2.kafka-headless.data-pipeline.svc.cluster.local:9092"
+        ELASTICSEARCH_HOSTS     = "http://elasticsearch.data-store.svc.cluster.local:9200"
+      }
+      resources = {
+        limits = {
+          memory = "2Gi"
+          cpu    = "1000m"
+        }
+        requests = {
+          memory = "512Mi"
+          cpu    = "300m"
+        }
+      }
+    })
+  ]
+
+  depends_on = [helm_release.kafka, helm_release.schema_registry]
+}
+
 # Elasticsearch
 resource "helm_release" "elasticsearch" {
   name       = "elasticsearch"

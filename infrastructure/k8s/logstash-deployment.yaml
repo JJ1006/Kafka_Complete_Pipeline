@@ -1,0 +1,295 @@
+---
+# Logstash ConfigMap with pipeline configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-pipeline-config
+  namespace: data-pipeline
+  labels:
+    app: logstash
+    component: pipeline-config
+data:
+  credit_transactions.conf: |
+    # Logstash Pipeline: Kafka -> Elasticsearch + DLQ
+    # Consumes credit transactions from Kafka, decodes Avro, indexes to ES
+
+    input {
+      kafka {
+        bootstrap_servers => "${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}"
+        topics => ["credit.transactions.v1"]
+        group_id => "logstash-credit-consumer"
+        consumer_threads => 4
+        codec => "plain"
+        auto_offset_reset => "earliest"
+        session_timeout_ms => 30000
+      }
+    }
+
+    filter {
+      # Parse Kafka metadata
+      mutate {
+        add_field => {
+          "kafka_topic" => "${[@metadata][kafka][topic]}"
+          "kafka_partition" => "${[@metadata][kafka][partition]}"
+          "kafka_offset" => "${[@metadata][kafka][offset]}"
+          "kafka_timestamp" => "${[@metadata][kafka][timestamp]}"
+          "pipeline_timestamp" => "%{+yyyy-MM-dd'T'HH:mm:ss.SSS'Z'}"
+        }
+      }
+
+      # Decode message body
+      ruby {
+        code => "
+          require 'json'
+          require 'base64'
+
+          begin
+            begin
+              event.set('transaction', JSON.parse(event.get('message')))
+            rescue JSON::ParserError => e
+              event.set('[@metadata][decode_error]', \"Invalid JSON: #{e.message}\")
+              event.tag('_dlq')
+            end
+          rescue StandardError => e
+            event.set('[@metadata][decode_error]', \"Decode failed: #{e.message}\")
+            event.tag('_dlq')
+          end
+        "
+      }
+
+      # Extract transaction fields
+      if ![transaction] or [transaction] == nil {
+        mutate {
+          add_tag => ["_dlq", "_missing_transaction"]
+        }
+      } else {
+        ruby {
+          code => "
+            tx = event.get('transaction')
+            
+            # Validate required fields
+            required_fields = ['applicationNumber', 'requestId']
+            missing = required_fields.select { |f| tx[f].nil? or tx[f].empty? }
+            
+            if !missing.empty?
+              event.set('[@metadata][validation_error]', \"Missing fields: #{missing.join(', ')}\")
+              event.tag('_dlq')
+              event.tag('_validation_error')
+            else
+              # Extract and normalize fields
+              event.set('application_number', tx['applicationNumber'])
+              event.set('request_id', tx['requestId'])
+              event.set('transunion_score', tx['transunionScore'].to_i)
+              event.set('loan_amount', tx['loanAmount'].to_f)
+              event.set('tenure_months', tx['tenureMonths'].to_i)
+              event.set('interest_rate_apr', tx['interestRateApr'].to_f)
+              event.set('employment_type', tx['employmentType'].upcase)
+              event.set('product_type', tx['productType'].upcase)
+              event.set('customer_city', tx['customerCity'])
+              event.set('income_monthly', tx['incomeMonthly']&.to_f)
+              event.set('existing_debt', tx['existingDebt']&.to_f)
+              event.set('schema_version', tx['schemaVersion'])
+              event.set('event_id', tx['eventId'])
+              event.set('ingested_at', tx['ingestedAt'])
+              event.set('source', tx['source'])
+              event.set('trace_id', tx['traceId'])
+              event.set('correlation_id', tx['correlationId'])
+            end
+          "
+        }
+      }
+
+      # Set document_id
+      if ![@metadata][validation_error] {
+        ruby {
+          code => "
+            app_num = event.get('application_number')
+            req_id = event.get('request_id')
+            if app_num && req_id
+              event.set('[@metadata][document_id]', \"#{app_num}:#{req_id}\")
+            end
+          "
+        }
+      }
+
+      # Add processing metadata
+      mutate {
+        add_field => {
+          "processed_at" => "%{+yyyy-MM-dd'T'HH:mm:ss.SSS'Z'}"
+        }
+      }
+    }
+
+    output {
+      # Route to DLQ on errors
+      if "_dlq" in [tags] {
+        kafka {
+          bootstrap_servers => "${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}"
+          topic_id => "credit.transactions.dlq.v1"
+          codec => "json"
+        }
+      } else {
+        # Index to Elasticsearch
+        elasticsearch {
+          hosts => ["${ELASTICSEARCH_HOSTS:localhost:9200}"]
+          index => "credit-transactions-write"
+          document_id => "%{[@metadata][document_id]}"
+          action => "create"
+          retry_on_conflict => 3
+          timeout => "30s"
+        }
+      }
+    }
+
+---
+# Logstash Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logstash
+  namespace: data-pipeline
+  labels:
+    app: logstash
+    component: pipeline
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: logstash
+  template:
+    metadata:
+      labels:
+        app: logstash
+        component: pipeline
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9600"
+        prometheus.io/path: "/?pretty"
+    spec:
+      serviceAccountName: logstash
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      containers:
+      - name: logstash
+        image: docker.elastic.co/logstash/logstash:8.13.0
+        imagePullPolicy: IfNotPresent
+        
+        ports:
+        - name: http
+          containerPort: 9600
+          protocol: TCP
+        - name: metrics
+          containerPort: 9600
+          protocol: TCP
+        
+        env:
+        - name: LOG_LEVEL
+          value: "info"
+        - name: JAVA_XMS
+          value: "512m"
+        - name: JAVA_XMX
+          value: "1024m"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka-0.kafka-headless.data-pipeline.svc.cluster.local:9092,kafka-1.kafka-headless.data-pipeline.svc.cluster.local:9092,kafka-2.kafka-headless.data-pipeline.svc.cluster.local:9092"
+        - name: ELASTICSEARCH_HOSTS
+          value: "http://elasticsearch.data-store.svc.cluster.local:9200"
+        - name: TZ
+          value: "UTC"
+        
+        volumeMounts:
+        - name: pipeline-config
+          mountPath: /usr/share/logstash/pipeline/
+          readOnly: true
+        - name: config
+          mountPath: /usr/share/logstash/config/
+          readOnly: true
+        
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+        
+        # Security context for container
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      
+      volumes:
+      - name: pipeline-config
+        configMap:
+          name: logstash-pipeline-config
+          defaultMode: 0444
+      
+      - name: config
+        emptyDir: {}
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - logstash
+              topologyKey: kubernetes.io/hostname
+
+---
+# ServiceAccount for Logstash
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: logstash
+  namespace: data-pipeline
+
+---
+# Service for monitoring/metrics
+apiVersion: v1
+kind: Service
+metadata:
+  name: logstash
+  namespace: data-pipeline
+  labels:
+    app: logstash
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9600
+    targetPort: http
+    name: http
+  selector:
+    app: logstash

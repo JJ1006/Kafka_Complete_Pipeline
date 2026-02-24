@@ -1,0 +1,98 @@
+{
+  "type": "record",
+  "name": "CreditTransaction",
+  "namespace": "com.creditplatform.transactions",
+  "doc": "Avro schema for credit transaction events",
+  "fields": [
+    {
+      "name": "schemaVersion",
+      "type": "string",
+      "doc": "Schema version (e.g. 1.0)"
+    },
+    {
+      "name": "eventId",
+      "type": "string",
+      "doc": "Unique event identifier (UUID)"
+    },
+    {
+      "name": "ingestedAt",
+      "type": "string",
+      "doc": "ISO 8601 timestamp when event was ingested to Kafka"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "doc": "Source system (e.g. credit-api)"
+    },
+    {
+      "name": "traceId",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "OTel trace ID for distributed tracing"
+    },
+    {
+      "name": "correlationId",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Correlation ID for tracking request through pipeline"
+    },
+    {
+      "name": "applicationNumber",
+      "type": "string",
+      "doc": "unique application identifier"
+    },
+    {
+      "name": "requestId",
+      "type": "string",
+      "doc": "Idempotency key for deduplication"
+    },
+    {
+      "name": "transunionScore",
+      "type": "int",
+      "doc": "Credit score (300-900)"
+    },
+    {
+      "name": "loanAmount",
+      "type": "string",
+      "doc": "Loan amount in dollars (stored as string for precision)"
+    },
+    {
+      "name": "tenureMonths",
+      "type": "int",
+      "doc": "Loan tenure in months (1-600)"
+    },
+    {
+      "name": "interestRateApr",
+      "type": "string",
+      "doc": "Annual interest rate percentage (0.0-100.0, string for precision)"
+    },
+    {
+      "name": "employmentType",
+      "type": "string",
+      "doc": "Employment type (Salaried, SelfEmployed, Student, Unemployed, Other)"
+    },
+    {
+      "name": "productType",
+      "type": "string",
+      "doc": "Credit product type (e.g. PersonalLoan, AutoLoan, CreditCard, Mortgage)"
+    },
+    {
+      "name": "customerCity",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Customer city (optional)"
+    },
+    {
+      "name": "incomeMonthly",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Monthly income in dollars (optional, string for precision)"
+    },
+    {
+      "name": "existingDebt",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Existing debt in dollars (optional, string for precision)"
+    }
+  ]
+}

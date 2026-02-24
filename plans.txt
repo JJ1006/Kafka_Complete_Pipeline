@@ -854,8 +854,56 @@ GOAL: Logstash consumes from Kafka, decodes Avro, enriches with metadata,
 indexes to ES with correct doc_id. Invalid messages route to DLQ with full
 error envelope. No silent drops.
 
---------------------------------------------------------------------------------
-Task 5.1 — Logstash Pipeline Configuration
+STATUS: ✅ IMPLEMENTATION COMPLETE
+  ✓ infrastructure/schemas/credit_transaction_v1.avsc created (17 Avro fields with nulls)
+  ✓ infrastructure/logstash/pipeline/credit_transactions.conf created (Kafka -> ES/DLQ routing)
+  ✓ infrastructure/k8s/logstash-deployment.yaml created (ConfigMap + Deployment + Service + SA)
+  ✓ infrastructure/terraform/main.tf updated (added Logstash Helm release)
+  ✓ infrastructure/terraform/variables.tf (logstash_chart_version 5.5.2 already defined)
+
+KEY IMPLEMENTATIONS:
+  - Kafka input: bootstrap_servers, topic=credit.transactions.v1, consumer_threads=4
+  - Filter pipeline: Parse metadata, decode JSON (dev mode) → Avro decode (prod ready)
+  - Validation: Required fields check (applicationNumber, requestId) → _dlq tag on error
+  - Enrichment: Add kafka_partition, kafka_offset, pipeline_timestamp, doc_id
+  - Output: Success → Elasticsearch with doc_id, retry_on_conflict=3, exponential backoff
+  - DLQ routing: Validation errors & decode failures → credit.transactions.dlq.v1 Kafka topic
+  - Kubernetes: Deployment with 2 replicas, 300m→1000m CPU, 512Mi→2Gi RAM
+  - Health checks: readinessProbe on Logstash HTTP API port 9600
+
+AVRO SCHEMA (17 fields):
+  - Core: schemaVersion, eventId, ingestedAt, source, traceId, correlationId
+  - Application: applicationNumber, requestId, productType, employmentType
+  - Financial: transunionScore, loanAmount, tenureMonths, interestRateApr
+  - Optional: customerCity, incomeMonthly, existingDebt
+
+DLQ ERROR ENVELOPE (sent to credit.transactions.dlq.v1):
+  {
+    "original_message": {...},
+    "error_type": "validation_error | decode_error",
+    "error_message": "...",
+    "pipeline_timestamp": "...",
+    "logstash_hostname": "..."
+  }
+
+KUBERNETES MANIFESTS:
+  1. ConfigMap: logstash-pipeline-config (pipeline config with inline Ruby filters)
+  2. Deployment: logstash (2 replicas, pod anti-affinity, non-root user 1000)
+  3. Service: logstash (port 9600 for http GET /?pretty health check)
+  4. ServiceAccount: logstash (for RBAC if needed)
+
+NEXT STEP: Deploy and verify E2E
+  kubectl apply -f infrastructure/k8s/logstash-deployment.yaml
+  # Wait 30s for Logstash pods to be ready
+  curl -X POST http://localhost:8000/transactions \\
+    -H "X-API-Key: test-key" \\
+    -H "Content-Type: application/json" \\
+    -d '{"applicationNumber":"APP-TEST","requestId":"REQ-TEST","transunionScore":720,...}'
+  # Wait ~5s for Logstash processing
+  curl 'http://localhost:9200/credit-transactions-read/_doc/APP-TEST:REQ-TEST' | jq .
+
+------------------------------------------------------------------------
+Task 5.1 — Kafka Producer Service
 --------------------------------------------------------------------------------
 
 CLAUDE PROMPT:
