@@ -1,0 +1,8 @@
+-r requirements-dev.txt
+pytest==8.1.1
+pytest-asyncio==0.23.6
+pytest-cov==5.0.0
+pytest-mock==3.14.0
+testcontainers==4.4.0
+factory-boy==3.3.0
+faker==24.3.0

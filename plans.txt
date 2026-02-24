@@ -1,0 +1,1635 @@
+================================================================================
+  OVERVIEW — ALL 10 PHASES AT A GLANCE
+================================================================================
+
+  PHASE 1  — Repository & Tooling Setup
+             GitHub repo, branch strategy, VS Code extensions, pre-commit
+             hooks, pyproject.toml, .env structure
+
+  PHASE 2  — Local Kubernetes Infrastructure
+             kind cluster, Terraform scaffold, all Helm releases (Kafka KRaft mode,
+             ES, Redis, Vault, Prometheus, Jaeger...), Vault init, Kafka topics,
+             ES ILM + index template
+
+  PHASE 3  — FastAPI Application Skeleton
+             Project structure, Pydantic models, health check, auth middleware,
+             rate limiting, structured logging, config from env vars
+
+  PHASE 4  — Ingest Pipeline
+             POST /transactions, Redis SETNX dedup, Kafka Avro producer,
+             Schema Registry, idempotency key handling, unit tests
+
+  PHASE 5  — Logstash Pipeline
+             Kafka → Elasticsearch pipeline, Avro decode, enrichment,
+             DLQ routing, retry policy, K8s ConfigMap + Deployment
+
+  PHASE 6  — Query & Retrieval API
+             GET endpoints, Elasticsearch query service, Redis caching,
+             pagination, streaming download with search_after
+
+  PHASE 7  — Observability Stack
+             OTel + Jaeger traces, Prometheus custom metrics, Grafana
+             dashboards, Alertmanager rules
+
+  PHASE 8  — Web UI
+             Vue 3 SPA (JWT in memory, NOT localStorage), Search & Download
+             page, Create Transaction page, Nginx Dockerfile
+
+  PHASE 9  — CI/CD Pipeline
+             GitHub Actions (lint, typecheck, test, build, Trivy scan),
+             ArgoCD GitOps setup, Dependabot
+
+  PHASE 10 — Testing & Hardening
+             Integration tests, k6 load tests, KEDA ScaledObject, Network
+             Policies, runbooks, final verification checklist
+
+
+================================================================================
+  PREREQUISITES — INSTALL EVERYTHING FIRST
+================================================================================
+
+Do NOT start Phase 1 until ALL tools below are installed and verified.
+Each "verify" command must return without error.
+
+  Tool              Version    Install                          Verify
+  ----------------  ---------  -------------------------------  ------------------
+  Homebrew          latest     see brew.sh                      brew --version
+  Docker Desktop    4.x+       brew install --cask docker       docker info
+  kind              0.22+      brew install kind                kind version
+  kubectl           1.28+      brew install kubectl             kubectl version --client
+  Helm              3.14+      brew install helm                helm version
+  Terraform         1.7+       brew install terraform           terraform --version
+  Python            3.12+      brew install python@3.12         python3.12 --version
+  Node.js           20+        brew install node                node --version
+  Git               2.40+      brew install git                 git --version
+  GitHub CLI        2.x+       brew install gh                  gh --version
+  ArgoCD CLI        2.x+       brew install argocd              argocd version --client
+  k6                latest     brew install k6                  k6 version
+  Vault CLI         1.15+      brew install vault               vault --version
+  jq                latest     brew install jq                  jq --version
+
+VS Code Extensions (install all):
+  - Python                  (ms-python.python)
+  - Ruff                    (charliermarsh.ruff)
+  - Pylance                 (ms-python.vscode-pylance)
+  - Docker                  (ms-azuretools.vscode-docker)
+  - Kubernetes              (ms-kubernetes-tools.vscode-kubernetes-tools)
+  - YAML                    (redhat.vscode-yaml)
+  - REST Client             (humao.rest-client)
+  - GitLens                 (eamodio.gitlens)
+  - HashiCorp Terraform     (hashicorp.terraform)
+  - Thunder Client          (rangav.vscode-thunder-client)
+
+
+================================================================================
+  PHASE 1 — REPOSITORY & TOOLING SETUP
+================================================================================
+
+GOAL: GitHub repo exists with branch protection, pre-commit hooks run on every
+commit, project folder structure created, Python virtual environment works.
+
+--------------------------------------------------------------------------------
+Task 1.1 — Create GitHub Repository
+--------------------------------------------------------------------------------
+
+  gh auth login
+
+  gh repo create credit-transaction-platform \
+    --private \
+    --description 'Production-grade credit transaction ingest & query platform' \
+    --clone
+
+  cd credit-transaction-platform
+
+Set branch protection (GitHub UI → Settings → Branches → Add rule for "main"):
+  - Require pull request before merging: YES
+  - Require status checks to pass: YES (add "ci" once workflow exists)
+  - Require branches to be up to date: YES
+  - Include administrators: YES
+
+--------------------------------------------------------------------------------
+Task 1.2 — Project Folder Structure
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Create the complete folder structure for a production FastAPI application
+  with Kafka, Elasticsearch, Redis, Terraform IaC, Helm charts, GitHub Actions
+  CI/CD, tests, and a Vue 3 web UI. Show mkdir commands for Mac. Include
+  __init__.py files and .gitkeep for empty directories."
+
+Run these from your repo root:
+
+  mkdir -p src/api/{routers,middleware,models,services,core}
+  mkdir -p src/auth
+  mkdir -p src/consumer
+  mkdir -p src/web/static/{css,js,assets}
+  mkdir -p infrastructure/terraform/modules/{namespaces,kafka,schema-registry,\
+logstash,elasticsearch,kibana,redis,prometheus-stack,jaeger,otel-collector,\
+keda,vault,credit-api,web-ui}
+  mkdir -p infrastructure/helm/credit-api/{templates,charts}
+  mkdir -p infrastructure/helm/web-ui/{templates,charts}
+  mkdir -p infrastructure/logstash/pipeline
+  mkdir -p infrastructure/elasticsearch/{templates,ilm}
+  mkdir -p infrastructure/kibana/dashboards
+  mkdir -p infrastructure/schemas
+  mkdir -p infrastructure/vault/policies
+  mkdir -p infrastructure/k8s/{network-policies,rbac}
+  mkdir -p infrastructure/argocd
+  mkdir -p infrastructure/grafana
+  mkdir -p infrastructure/prometheus
+  mkdir -p .github/workflows
+  mkdir -p tests/{unit,integration,contract,e2e,load,fixtures}
+  mkdir -p scripts
+  mkdir -p docs/runbooks
+
+  touch src/__init__.py
+  touch src/api/__init__.py src/api/routers/__init__.py
+  touch src/api/middleware/__init__.py src/api/models/__init__.py
+  touch src/api/services/__init__.py src/api/core/__init__.py
+  touch src/auth/__init__.py src/consumer/__init__.py
+
+--------------------------------------------------------------------------------
+Task 1.3 — Python Virtual Environment & Dependencies
+--------------------------------------------------------------------------------
+
+  python3.12 -m venv .venv
+  source .venv/bin/activate
+
+  touch requirements.txt requirements-dev.txt requirements-test.txt
+
+--- requirements.txt ---
+  fastapi==0.110.0
+  uvicorn[standard]==0.27.1
+  pydantic==2.6.3
+  pydantic-settings==2.2.1
+  httpx==0.27.0
+  python-jose[cryptography]==3.3.0
+  passlib[bcrypt]==1.7.4
+  slowapi==0.1.9
+  redis[hiredis]==5.0.3
+  aiokafka==0.10.0
+  fastavro==1.9.4
+  elastic-transport==8.13.0
+  elasticsearch[async]==8.13.0
+  opentelemetry-api==1.23.0
+  opentelemetry-sdk==1.23.0
+  opentelemetry-instrumentation-fastapi==0.44b0
+  opentelemetry-exporter-otlp-proto-grpc==1.23.0
+  prometheus-fastapi-instrumentator==6.1.0
+  structlog==24.1.0
+  python-multipart==0.0.9
+  python-dotenv==1.0.1
+
+--- requirements-dev.txt ---
+  -r requirements.txt
+  ruff==0.3.3
+  black==24.3.0
+  mypy==1.9.0
+  pre-commit==3.7.0
+  ipython==8.22.2
+
+--- requirements-test.txt ---
+  -r requirements-dev.txt
+  pytest==8.1.1
+  pytest-asyncio==0.23.6
+  pytest-cov==5.0.0
+  pytest-mock==3.14.0
+  testcontainers==4.4.0
+  factory-boy==3.3.0
+  faker==24.3.0
+
+  pip install -r requirements-dev.txt
+  pip install -r requirements-test.txt
+
+--------------------------------------------------------------------------------
+Task 1.4 — Pre-commit Hooks
+--------------------------------------------------------------------------------
+
+Create .pre-commit-config.yaml in repo root:
+
+  repos:
+    - repo: https://github.com/astral-sh/ruff-pre-commit
+      rev: v0.3.3
+      hooks:
+        - id: ruff
+          args: [--fix]
+        - id: ruff-format
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v4.5.0
+      hooks:
+        - id: trailing-whitespace
+        - id: end-of-file-fixer
+        - id: check-yaml
+        - id: check-json
+        - id: check-added-large-files
+          args: ['--maxkb=500']
+        - id: detect-private-key
+        - id: check-merge-conflict
+    - repo: https://github.com/Yelp/detect-secrets
+      rev: v1.4.0
+      hooks:
+        - id: detect-secrets
+
+  pre-commit install
+  pre-commit run --all-files
+
+--------------------------------------------------------------------------------
+Task 1.5 — pyproject.toml
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a complete pyproject.toml for a FastAPI project with: ruff
+  configured for line-length=100, select E,F,I,N,W,UP rules; mypy strict mode
+  enabled; pytest configured with asyncio_mode=auto, testpaths=[tests],
+  coverage minimum 80%; black line-length=100."
+
+--------------------------------------------------------------------------------
+Task 1.6 — .gitignore & .env Structure
+--------------------------------------------------------------------------------
+
+Critical .gitignore entries:
+  .venv/
+  __pycache__/
+  *.pyc
+  .env
+  .env.*
+  !.env.example
+  *.tfstate
+  *.tfstate.*
+  .terraform/
+  terraform.tfvars
+  !terraform.tfvars.example
+  vault-keys.txt
+  *.key
+  *.pem
+  *.crt
+  node_modules/
+  .coverage
+  htmlcov/
+
+Create .env.example (committed to Git — no real values, only var names):
+
+  # Application
+  APP_ENV=development
+  APP_SECRET_KEY=
+  APP_API_KEY=
+
+  # Kafka
+  KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+  KAFKA_SCHEMA_REGISTRY_URL=http://localhost:8081
+  KAFKA_TOPIC_TRANSACTIONS=credit.transactions.v1
+  KAFKA_TOPIC_DLQ=credit.transactions.dlq.v1
+
+  # Elasticsearch
+  ELASTICSEARCH_URL=http://localhost:9200
+  ELASTICSEARCH_INDEX_ALIAS_WRITE=credit-transactions-write
+  ELASTICSEARCH_INDEX_ALIAS_READ=credit-transactions-read
+
+  # Redis
+  REDIS_URL=redis://localhost:6379
+  CACHE_TTL_SECONDS=60
+
+  # Auth
+  JWT_SECRET_KEY=
+  JWT_ALGORITHM=HS256
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES=15
+
+  # OpenTelemetry
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+  OTEL_SERVICE_NAME=credit-api
+
+  # Rate Limits
+  RATE_LIMIT_INGEST=500/minute
+  RATE_LIMIT_QUERY=1000/minute
+  RATE_LIMIT_DOWNLOAD=10/minute
+
+  # Limits
+  RANGE_MAX_DAYS=90
+  STREAM_CHUNK_SIZE=1000
+
+SECURITY RULE: NEVER commit .env (real values). Only .env.example is committed.
+In Kubernetes, values come from Vault via the Agent Injector.
+
+--------------------------------------------------------------------------------
+Task 1.7 — First Commit
+--------------------------------------------------------------------------------
+
+  git add .
+  git commit -m "chore: initial project scaffold — Phase 1 complete"
+  git push origin main
+
+
+================================================================================
+  PHASE 2 — LOCAL KUBERNETES INFRASTRUCTURE
+================================================================================
+
+GOAL: kind cluster running, all Helm releases deployed via Terraform, Vault
+initialized and unsealed, Kafka topics created, ES index template applied.
+
+--------------------------------------------------------------------------------
+Task 2.1 — Create kind Cluster
+--------------------------------------------------------------------------------
+
+Create infrastructure/kind-config.yaml:
+
+  kind: Cluster
+  apiVersion: kind.x-k8s.io/v1alpha4
+  name: credit-platform
+  nodes:
+    - role: control-plane
+      kubeadmConfigPatches:
+        - |
+          kind: InitConfiguration
+          nodeRegistration:
+            kubeletExtraArgs:
+              node-labels: "ingress-ready=true"
+      extraPortMappings:
+        - containerPort: 80
+          hostPort: 8080
+          protocol: TCP
+        - containerPort: 443
+          hostPort: 8443
+          protocol: TCP
+    - role: worker
+    - role: worker
+
+  kind create cluster --config infrastructure/kind-config.yaml
+  kubectl cluster-info --context kind-credit-platform
+  kubectl get nodes    # all nodes must show Ready
+
+--------------------------------------------------------------------------------
+Task 2.2 — Terraform Scaffold
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate complete Terraform files (main.tf, variables.tf, outputs.tf,
+  providers.tf, versions.tf) for deploying Helm releases to a local kind
+  Kubernetes cluster. Providers: kubernetes and helm. All Helm chart versions
+  pinned as variables. Include modules for: namespaces, kafka (bitnami),
+  schema-registry (confluent), logstash, elasticsearch (bitnami), kibana
+  (bitnami), redis (bitnami), kube-prometheus-stack, jaeger, opentelemetry-
+  collector, keda, vault (hashicorp), credit-api placeholder, web-ui
+  placeholder."
+
+Key files to create:
+
+infrastructure/terraform/versions.tf:
+  terraform {
+    required_version = ">= 1.7.0"
+    required_providers {
+      kubernetes = { source = "hashicorp/kubernetes", version = "~> 2.27" }
+      helm       = { source = "hashicorp/helm",       version = "~> 2.12" }
+    }
+  }
+
+infrastructure/terraform/providers.tf:
+  provider "kubernetes" {
+    config_path    = "~/.kube/config"
+    config_context = "kind-credit-platform"
+  }
+  provider "helm" {
+    kubernetes {
+      config_path    = "~/.kube/config"
+      config_context = "kind-credit-platform"
+    }
+  }
+
+  cd infrastructure/terraform
+  terraform init
+  terraform validate
+  terraform plan        # review output carefully before applying
+  terraform apply -auto-approve
+
+--------------------------------------------------------------------------------
+Task 2.3 — Deploy Infrastructure (Order Matters)
+--------------------------------------------------------------------------------
+
+Deploy in this exact order:
+
+  1.  Namespaces          —  kubectl get ns to verify
+  2.  Vault               security ns          —  vault status
+  3.  Redis               data-store ns        —  redis-cli ping
+  4.  Kafka (KRaft mode)   data-pipeline ns     —  kafka-topics.sh --list
+  5.  Schema Registry     data-pipeline ns     —  curl :8081/subjects
+  6.  Elasticsearch       data-store ns        —  curl :9200/_cluster/health
+  7.  Kibana              data-store ns        —  curl :5601/api/status
+  8.  Logstash            data-pipeline ns     —  curl :9600/?pretty
+  9.  Prometheus Stack    observability ns     —  curl :9090/-/ready
+  10. Jaeger              observability ns     —  curl :16686/api/services
+  11. OTel Collector      observability ns     —  check pod logs
+  12. KEDA                keda-system ns       —  kubectl get crd | grep keda
+
+Helm charts to use:
+  Kafka          : bitnami/kafka 26.x
+  Schema Registry: confluentinc/cp-helm-charts
+  Elasticsearch  : bitnami/elasticsearch 19.x
+  Kibana         : bitnami/kibana 10.x
+  Logstash       : bitnami/logstash 5.x
+  Redis          : bitnami/redis 19.x
+  Prometheus     : prometheus-community/kube-prometheus-stack
+  Jaeger         : jaegertracing/jaeger 0.71.x
+  OTel Collector : open-telemetry/opentelemetry-collector
+  KEDA           : kedacore/keda 2.x
+  Vault          : hashicorp/vault 0.27.x
+
+--------------------------------------------------------------------------------
+Task 2.4 — Initialize & Unseal Vault
+--------------------------------------------------------------------------------
+
+  kubectl port-forward -n security svc/vault 8200:8200 &
+  export VAULT_ADDR='http://127.0.0.1:8200'
+
+  # Initialize — SAVE THIS OUTPUT SECURELY
+  vault operator init -key-shares=5 -key-threshold=3 > vault-keys.txt
+
+  # Unseal with 3 of the 5 keys
+  vault operator unseal    # key 1
+  vault operator unseal    # key 2
+  vault operator unseal    # key 3
+
+  vault login              # use root token from vault-keys.txt
+
+  vault secrets enable -path=secret kv-v2
+  vault auth enable kubernetes
+
+  # Store application secrets
+  vault kv put secret/credit-api \
+    app_secret_key=$(openssl rand -hex 32) \
+    jwt_secret_key=$(openssl rand -hex 32) \
+    api_key=$(openssl rand -hex 24)
+
+  vault kv get secret/credit-api    # verify
+
+SECURITY: vault-keys.txt is in .gitignore. NEVER commit it. Store unseal keys
+in a password manager. In real production use Vault auto-unseal with KMS.
+
+--------------------------------------------------------------------------------
+Task 2.5 — Create Kafka Topics
+--------------------------------------------------------------------------------
+
+  kubectl port-forward -n data-pipeline svc/kafka 9092:9092 &
+
+  kafka-topics.sh --bootstrap-server localhost:9092 --create \
+    --topic credit.transactions.v1 \
+    --partitions 6 \
+    --replication-factor 1 \
+    --config retention.ms=2592000000 \
+    --config compression.type=snappy
+
+  kafka-topics.sh --bootstrap-server localhost:9092 --create \
+    --topic credit.transactions.dlq.v1 \
+    --partitions 3 \
+    --replication-factor 1 \
+    --config retention.ms=7776000000
+
+  kafka-topics.sh --bootstrap-server localhost:9092 --create \
+    --topic credit.transactions.audit.v1 \
+    --partitions 3 \
+    --replication-factor 1 \
+    --config retention.ms=31536000000
+
+  kafka-topics.sh --bootstrap-server localhost:9092 --list    # verify
+
+NOTE: Kafka now uses KRaft mode (no Zookeeper). Replication factor 1 is fine for
+local dev. Production requires 3+ with min.insync.replicas=2.
+
+--------------------------------------------------------------------------------
+Task 2.6 — Register Avro Schema
+--------------------------------------------------------------------------------
+
+Create infrastructure/schemas/credit_transaction_v1.avsc:
+
+  {
+    "type": "record",
+    "name": "CreditTransaction",
+    "namespace": "com.creditplatform.transactions",
+    "fields": [
+      {"name": "schemaVersion",   "type": "string",           "default": "1.0"},
+      {"name": "eventId",         "type": "string"},
+      {"name": "ingestedAt",      "type": "string"},
+      {"name": "source",          "type": "string",           "default": "credit-api"},
+      {"name": "traceId",         "type": ["null","string"],  "default": null},
+      {"name": "correlationId",   "type": ["null","string"],  "default": null},
+      {"name": "applicationNumber","type": "string"},
+      {"name": "requestId",       "type": "string"},
+      {"name": "datetime",        "type": "string"},
+      {"name": "name",            "type": ["null","string"],  "default": null},
+      {"name": "role",            "type": ["null","string"],  "default": null},
+      {"name": "producttype",     "type": ["null","string"],  "default": null},
+      {"name": "transunionscore", "type": ["null","int"],     "default": null},
+      {"name": "loanAmount",      "type": ["null","double"],  "default": null},
+      {"name": "tenureMonths",    "type": ["null","int"],     "default": null},
+      {"name": "interestRateAPR", "type": ["null","double"],  "default": null},
+      {"name": "employmentType",  "type": ["null","string"],  "default": null},
+      {"name": "city",            "type": ["null","string"],  "default": null}
+    ]
+  }
+
+  kubectl port-forward -n data-pipeline svc/schema-registry 8081:8081 &
+
+  SCHEMA=$(cat infrastructure/schemas/credit_transaction_v1.avsc | jq -c . | \
+    python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+
+  curl -X POST http://localhost:8081/subjects/credit.transactions.v1-value/versions \
+    -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+    -d "{\"schema\": $SCHEMA}"
+
+  curl http://localhost:8081/subjects/credit.transactions.v1-value/versions/latest | jq .
+
+--------------------------------------------------------------------------------
+Task 2.7 — Apply Elasticsearch ILM Policy & Index Template
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate the Elasticsearch ILM policy JSON file with: Hot phase (rollover
+  at 1 day or 5GB), Warm phase after 1 day (forcemerge 1 segment), Cold phase
+  after 30 days, Delete phase after 90 days. Also generate the complete index
+  template JSON for credit-transactions-* with dynamic:strict and all field
+  mappings from the spec."
+
+  kubectl port-forward -n data-store svc/elasticsearch 9200:9200 &
+
+  # Apply ILM policy
+  curl -X PUT 'http://localhost:9200/_ilm/policy/credit-transactions-policy' \
+    -H 'Content-Type: application/json' \
+    -d @infrastructure/elasticsearch/ilm/policy.json
+
+  # Apply index template
+  curl -X PUT 'http://localhost:9200/_index_template/credit-transactions' \
+    -H 'Content-Type: application/json' \
+    -d @infrastructure/elasticsearch/templates/credit_transactions.json
+
+  # Bootstrap first index with aliases
+  curl -X PUT 'http://localhost:9200/credit-transactions-000001' \
+    -H 'Content-Type: application/json' \
+    -d '{"aliases":{"credit-transactions-write":{"is_write_index":true},"credit-transactions-read":{}}}'
+
+  curl http://localhost:9200/_alias/credit-transactions-write | jq .
+
+  git add .
+  git commit -m "feat: Phase 2 complete — k8s infra, Vault, Kafka, ES template"
+  git push origin main
+
+
+================================================================================
+  PHASE 3 — FASTAPI APPLICATION SKELETON
+================================================================================
+
+GOAL: FastAPI app runs locally, health check responds, authentication works,
+rate limiting works, structured logging configured, all config from env vars.
+
+--------------------------------------------------------------------------------
+Task 3.1 — Application Configuration
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a complete Pydantic Settings class (pydantic-settings v2) for a
+  FastAPI production app. File: src/api/core/config.py. Fields: APP_ENV,
+  APP_DEBUG, KAFKA_BOOTSTRAP_SERVERS, KAFKA_SCHEMA_REGISTRY_URL,
+  KAFKA_TOPIC_TRANSACTIONS, KAFKA_TOPIC_DLQ, ELASTICSEARCH_URL,
+  ELASTICSEARCH_INDEX_ALIAS_WRITE, ELASTICSEARCH_INDEX_ALIAS_READ, REDIS_URL,
+  CACHE_TTL_SECONDS (int default 60), JWT_SECRET_KEY, JWT_ALGORITHM,
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES, OTEL_EXPORTER_OTLP_ENDPOINT,
+  OTEL_SERVICE_NAME, RATE_LIMIT_INGEST, RATE_LIMIT_QUERY, RANGE_MAX_DAYS
+  (int default 90), STREAM_CHUNK_SIZE (int default 1000). Use @lru_cache for
+  get_settings()."
+
+--------------------------------------------------------------------------------
+Task 3.2 — Structured Logging
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a structlog configuration for FastAPI production use.
+  File: src/api/core/logging.py. Requirements: JSON output in production
+  (APP_ENV=production), coloured console in development, always include:
+  timestamp, log_level, service_name, trace_id (from OTel context),
+  correlation_id. Provide get_logger() factory and configure_logging() to
+  call at startup."
+
+--------------------------------------------------------------------------------
+Task 3.3 — Main Application Entry Point
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a production FastAPI application factory in src/api/main.py.
+  Must include: lifespan context manager (startup: configure logging, init OTel
+  tracing, connect Redis, connect ES, connect Kafka producer; shutdown: flush
+  OTel, close all connections gracefully), CORS middleware (configurable
+  origins), TrustedHost middleware, GZip middleware for responses > 1KB,
+  slowapi rate limiter middleware, custom exception handlers for
+  RequestValidationError and HTTPException returning RFC 7807 format, catch-all
+  500 handler that logs with trace_id but NEVER exposes stack trace to client.
+  Register routers: /health, /transactions, /auth."
+
+--------------------------------------------------------------------------------
+Task 3.4 — Health Check Endpoint
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate the /health router for FastAPI in src/api/routers/health.py.
+  The endpoint must: check Kafka producer connectivity (list_topics, 2s
+  timeout), check Elasticsearch cluster health (GET /_cluster/health, 2s
+  timeout), check Redis connectivity (PING, 2s timeout). Run all checks
+  concurrently with asyncio.gather. Return 200 if all healthy, 503 if any
+  fails. Include individual latency_ms for each dependency. Never raise an
+  unhandled exception — always return structured JSON."
+
+Expected response shape:
+  {
+    "status": "healthy",
+    "timestamp": "2026-02-22T10:00:00Z",
+    "version": "1.0.0",
+    "dependencies": {
+      "kafka":         {"status": "healthy", "latency_ms": 4},
+      "elasticsearch": {"status": "healthy", "latency_ms": 8},
+      "redis":         {"status": "healthy", "latency_ms": 1}
+    }
+  }
+
+--------------------------------------------------------------------------------
+Task 3.5 — Authentication Middleware & Utilities
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate complete authentication for FastAPI. Files: src/auth/. Needed:
+  (1) API Key validation — read X-API-Key header, SHA-256 hash it, compare to
+  stored hash from settings using constant-time comparison (secrets.compare_
+  digest) to prevent timing attacks; (2) JWT validation — decode HS256 JWT,
+  validate expiry, extract role claim; (3) FastAPI dependencies: require_api_
+  key(), require_jwt(), get_current_user() that tries API key first then JWT;
+  (4) Role-based dependency: require_role(role: str); (5) Auth router with
+  POST /auth/token — accepts username+password as form data, returns
+  access_token + refresh_token (15min + 7day expiry)."
+
+Rate limit table:
+  Endpoint              Limit         Window      Scope
+  POST /transactions    500 req       per minute  per API key
+  GET  /transactions/*  1000 req      per minute  per API key
+  GET  /download        10 req        per minute  per API key
+  POST /auth/token      20 req        per minute  per IP
+
+--------------------------------------------------------------------------------
+Task 3.6 — Pydantic Models
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate all Pydantic v2 models in src/api/models/. Needed:
+  (1) TransactionCreate — all ingest fields with validators: applicationNumber/
+  requestId max 100 chars alphanumeric+dash+underscore, transunionscore 300-900,
+  datetime not more than 1 hour in future, loanAmount >= 0 max 2 decimal places,
+  tenureMonths 1-600, interestRateAPR 0.0-100.0, employmentType enum
+  (Salaried/SelfEmployed/Student/Unemployed/Other);
+  (2) TransactionResponse — all fields plus ingestedAt, schemaVersion, source;
+  (3) PaginatedResponse[T] generic with data list, total, page, pageSize,
+  totalPages, hasNext, hasPrevious, queryTimeMs, cacheStatus;
+  (4) ErrorResponse following RFC 7807 (type, title, status, detail, instance,
+  correlationId, traceId);
+  (5) HealthResponse;
+  (6) IngestResponse for 202 body.
+  Use model_config with str_strip_whitespace=True."
+
+--------------------------------------------------------------------------------
+Task 3.7 — Verify App Runs Locally
+--------------------------------------------------------------------------------
+
+  cp .env.example .env
+  # Fill in dummy values for local smoke test
+
+  uvicorn src.api.main:app --reload --port 8000
+
+  # In another terminal
+  curl http://localhost:8000/health | jq .
+  open http://localhost:8000/docs
+
+  git add .
+  git commit -m "feat: Phase 3 complete — FastAPI skeleton, auth, models, health"
+  git push origin main
+
+
+================================================================================
+  PHASE 4 — INGEST PIPELINE
+================================================================================
+
+GOAL: POST /transactions validates, deduplicates via Redis SETNX, produces Avro
+to Kafka, returns 202. Duplicate returns 409. Unit tests pass.
+
+STATUS: ✅ IMPLEMENTATION COMPLETE
+  ✓ src/api/services/dedup_service.py created (async Redis, atomic SETNX, 24h TTL)
+  ✓ src/api/services/kafka_producer.py created (aiokafka, Avro serialization, Schema Registry fetch)
+  ✓ src/api/routers/transactions.py created (POST /transactions endpoint, full flow)
+  ✓ tests/unit/test_ingest.py created (9 test cases, async fixtures)
+  ✓ requirements.txt updated (added aiohttp 3.9.3)
+  ✓ main.py updated (import services, initialize in lifespan, include router)
+
+KEY IMPLEMENTATIONS:
+  - Redis SETNX: dedup_key = "dedup:" + SHA256(app_number:request_id), 86400s TTL
+  - Kafka producer: acks=all, enable_idempotence=True, compression=snappy
+  - POST /transactions: 202 on success, 409 on duplicate, 401 if no X-API-Key
+  - Idempotency: X-Idempotency-Key header → cached response in Redis for retries
+  - OTel trace headers: X-Trace-ID, X-Correlation-ID for observability
+
+TESTS (tests/unit/test_ingest.py):
+  1. Valid transaction → 202 Accepted with composite_key
+  2. Duplicate transaction → 409 Conflict
+  3. Missing API key → 401 Unauthorized
+  4. Missing required field (applicationNumber) → 422 Unprocessable
+  5. Invalid credit score (250, outside 300-900) → 422
+  6. Invalid employment type → 422
+  7. Idempotency key (new request) → 202, caches response
+  8. Idempotency key (cached request) → 202 from cache (no Kafka produce)
+  9. Kafka producer unavailable → 503 Service Unavailable
+
+NEXT STEP: Run tests
+  pytest tests/unit/test_ingest.py -v --cov=src/api/routers/transactions
+
+------------------------------------------------------------------------
+Task 4.1 — Kafka Producer Service
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate an async Kafka producer service in src/api/services/kafka_producer.py
+  using aiokafka. Requirements: singleton initialized at app startup via
+  lifespan; settings: acks=all, enable_idempotence=True, max_in_flight_requests
+  _per_connection=5, compression_type=snappy, linger_ms=5; serialize messages
+  as Avro using fastavro with schema fetched from Schema Registry at startup and
+  cached in memory; message key = applicationNumber (bytes); inject OTel trace
+  context into Kafka message headers using W3C TraceContext format (traceparent,
+  tracestate headers); on produce failure log structured error with trace_id and
+  raise KafkaProducerException."
+
+Producer config summary:
+  acks                                = all (-1)
+  enable_idempotence                  = True
+  max_in_flight_requests_per_conn     = 5
+  retries                             = 2147483647
+  delivery_timeout_ms                 = 120000
+  compression_type                    = snappy
+  linger_ms                           = 5
+  batch_size                          = 65536
+  message key                         = applicationNumber
+
+--------------------------------------------------------------------------------
+Task 4.2 — Redis Deduplication Service
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate an async Redis deduplication service in src/api/services/
+  dedup_service.py using redis-py async client. Requirements:
+  (1) dedup_key = 'dedup:' + SHA256(applicationNumber + ':' + requestId);
+  (2) Use SET NX EX (atomic SETNX) with 24-hour TTL — prevents race conditions
+  across multiple FastAPI replicas;
+  (3) Return True if new key (proceed with ingest), False if exists (duplicate);
+  (4) Idempotency key cache: store 'idem:{idempotency_key}' -> original response
+  body JSON for 24 hours, return cached 202 on re-submission."
+
+WHY SETNX MATTERS: Without Redis atomic SETNX, two simultaneous identical
+requests on different FastAPI replicas both pass the ES-based check and both
+produce to Kafka before either ES doc is written. Redis SETNX is atomic and
+cluster-wide — it eliminates this race condition entirely.
+
+--------------------------------------------------------------------------------
+Task 4.3 — Ingest Router
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate the POST /transactions FastAPI router in src/api/routers/
+  transactions.py. Exact flow:
+  (1) Require auth via get_current_user dependency;
+  (2) Apply rate limit (500/minute per API key);
+  (3) Check X-Idempotency-Key header — if present and seen before, return
+      cached 202 response;
+  (4) Validate request body with TransactionCreate Pydantic model;
+  (5) Call dedup_service.check_and_set(applicationNumber, requestId) — if
+      duplicate raise HTTPException 409 with RFC 7807 body;
+  (6) Build Avro event envelope: add eventId=uuid4(), ingestedAt=utcnow(),
+      schemaVersion='1.0', source='credit-api', traceId from OTel context;
+  (7) Produce to Kafka via kafka_producer_service;
+  (8) If idempotency key provided, cache the 202 response in Redis;
+  (9) Return 202 IngestResponse with compositeKey, ingestedAt, correlationId,
+      traceId;
+  (10) Log structured audit event to stdout with all key fields."
+
+RFC 7807 error body for 409:
+  {
+    "type": "https://api.example.com/errors/duplicate-transaction",
+    "title": "Duplicate Transaction",
+    "status": 409,
+    "detail": "Transaction with applicationNumber=X and requestId=Y already exists.",
+    "instance": "/transactions/X/Y",
+    "correlationId": "uuid",
+    "traceId": "otel-trace-id"
+  }
+
+--------------------------------------------------------------------------------
+Task 4.4 — Unit Tests for Ingest
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate comprehensive pytest unit tests in tests/unit/test_ingest.py.
+  Mock: Kafka producer (verify produce() called with correct topic, key, value),
+  Redis dedup service, auth dependency (override with test API key). Test cases:
+  (1) valid transaction -> 202 with correct response body;
+  (2) duplicate -> 409;
+  (3) missing applicationNumber -> 400 with validation detail;
+  (4) transunionscore=900 (valid boundary) -> 202;
+  (5) transunionscore=901 (invalid) -> 422 with business rule error;
+  (6) idempotency key on second request -> returns cached 202;
+  (7) Kafka produce failure -> 503;
+  (8) unauthenticated request -> 401."
+
+  pytest tests/unit/test_ingest.py -v \
+    --cov=src/api/routers/transactions \
+    --cov-report=term-missing
+
+  git add .
+  git commit -m "feat: Phase 4 complete — ingest endpoint, Kafka, Redis dedup, tests"
+  git push origin main
+
+
+================================================================================
+  PHASE 5 — LOGSTASH PIPELINE
+================================================================================
+
+GOAL: Logstash consumes from Kafka, decodes Avro, enriches with metadata,
+indexes to ES with correct doc_id. Invalid messages route to DLQ with full
+error envelope. No silent drops.
+
+--------------------------------------------------------------------------------
+Task 5.1 — Logstash Pipeline Configuration
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a production Logstash pipeline config in infrastructure/logstash/
+  pipeline/credit_transactions.conf. INPUT: kafka plugin consuming
+  credit.transactions.v1, consumer group logstash-credit-consumer, codec=plain.
+  FILTER: (1) Ruby filter to decode Avro bytes using schema from file;
+  (2) validate applicationNumber and requestId are present — tag _dlq if not;
+  (3) add kafka_partition, kafka_offset, pipeline_timestamp from metadata;
+  (4) set document_id = applicationNumber + ':' + requestId;
+  (5) normalize producttype to uppercase.
+  OUTPUT: (1) if no _dlq tag: elasticsearch output to credit-transactions-write
+  alias, document_id from field, retry_on_conflict=3, exponential backoff 1s/2s/4s;
+  (2) if _dlq tag: kafka output to credit.transactions.dlq.v1 with full error
+  envelope JSON."
+
+DLQ envelope format (required on every failed message):
+  {
+    "dlq_timestamp":          "2026-02-22T10:00:00Z",
+    "dlq_reason":             "schema_decode_failure",
+    "dlq_error_detail":       "detailed error string",
+    "original_topic":         "credit.transactions.v1",
+    "kafka_partition":        3,
+    "kafka_offset":           10042,
+    "original_payload_b64":   "<base64 original bytes>",
+    "pipeline_timestamp":     "2026-02-22T10:00:01Z"
+  }
+
+Retry policy:
+  Attempt 1 -> fail -> wait 1s
+  Attempt 2 -> fail -> wait 2s
+  Attempt 3 -> fail -> wait 4s
+  After 3 failures -> route to DLQ topic AND log to stdout
+
+--------------------------------------------------------------------------------
+Task 5.2 — Logstash Kubernetes Manifests
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a Kubernetes ConfigMap for the Logstash pipeline config and a
+  Deployment manifest for Logstash. Requirements: mount pipeline ConfigMap at
+  /usr/share/logstash/pipeline/; read Kafka/ES credentials from Vault-injected
+  files at /vault/secrets/; resource requests: 300m CPU, 512Mi RAM; limits:
+  1000m CPU, 2Gi RAM; run as non-root user 1000; readinessProbe on Logstash
+  HTTP API port 9600. File: infrastructure/k8s/logstash-deployment.yaml"
+
+--------------------------------------------------------------------------------
+Task 5.3 — Verify End-to-End Ingest
+--------------------------------------------------------------------------------
+
+  # 1. POST a transaction
+  curl -X POST http://localhost:8000/transactions \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: your-api-key" \
+    -d '{"applicationNumber":"APP001","requestId":"REQ001","transunionscore":720}'
+
+  # 2. Wait ~5-10 seconds for Logstash to process
+
+  # 3. Verify ES document
+  curl 'http://localhost:9200/credit-transactions-read/_doc/APP001:REQ001' | jq .
+
+  # 4. Check Logstash logs
+  kubectl logs -n data-pipeline deployment/logstash --tail=50
+
+  git add .
+  git commit -m "feat: Phase 5 complete — Logstash pipeline, DLQ routing, E2E verify"
+  git push origin main
+
+
+================================================================================
+  PHASE 6 — QUERY & RETRIEVAL API
+================================================================================
+
+GOAL: All GET endpoints work, Redis cache returns X-Cache header, streaming
+download works in chunks without buffering, pagination is correct.
+
+--------------------------------------------------------------------------------
+Task 6.1 — Elasticsearch Query Service
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate an async Elasticsearch service in src/api/services/elasticsearch_
+  service.py using elasticsearch[async]. Methods:
+  (1) get_transaction(applicationNumber, requestId) -> TransactionResponse|None;
+  (2) list_by_application(applicationNumber, page, page_size, sort_field,
+      sort_order) -> PaginatedResponse[TransactionResponse];
+  (3) range_query(from_dt, to_dt, filters, page, page_size) -> PaginatedResponse,
+      validate range <= 90 days, return error dict if > 10000 results (not
+      streaming);
+  (4) scroll_for_download(from_dt, to_dt, filters) -> AsyncGenerator using
+      search_after pagination (NOT scroll API — deprecated in ES 8.x), sort on
+      [datetime, _id] for stable cursor pagination.
+  All reads use credit-transactions-read alias."
+
+--------------------------------------------------------------------------------
+Task 6.2 — Redis Cache Service
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a Redis cache service in src/api/services/cache_service.py.
+  (1) cache_key(prefix, **kwargs) — build deterministic key from sorted
+      normalized params: 'cache:{prefix}:{sha256(sorted params)}';
+  (2) get_cached(key) -> dict|None;
+  (3) set_cached(key, data, ttl);
+  (4) ALL operations in try/except — if Redis is down log warning and continue
+      WITHOUT cache (cache-aside: never fail the request);
+  (5) Return X-Cache: HIT or MISS header on every response;
+  (6) Downloads are NEVER cached."
+
+--------------------------------------------------------------------------------
+Task 6.3 — Query Routers
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate FastAPI GET routers in src/api/routers/transactions.py (add to
+  existing file). Endpoints:
+  (1) GET /transactions/{applicationNumber}/{requestId} — Redis cache first,
+      MISS -> ES query -> cache 60s, return 200 or 404 RFC 7807;
+  (2) GET /transactions?applicationNumber=&page=&pageSize=&sort=&fields= —
+      validate sort field in allowed list, cache result, PaginatedResponse;
+  (3) GET /transactions/range?from=&to=&filters... — validate 90-day window,
+      no caching, return PaginatedResponse or 400 if > 10000 results pointing
+      to /download;
+  (4) GET /transactions/download?from=&to=&format=csv|jsonl&filters — rate
+      limited 10/min, StreamingResponse, chunked 1000 records, Content-
+      Disposition header, log audit event.
+  All require auth. All include X-Cache header in response."
+
+Correct streaming pattern (NEVER buffer full dataset):
+  async def csv_generator(params):
+      yield "applicationNumber,requestId,datetime,...\n"    # header row
+      chunk = []
+      async for record in es_service.scroll_for_download(**params):
+          chunk.append(record_to_csv_row(record))
+          if len(chunk) >= settings.STREAM_CHUNK_SIZE:
+              yield "".join(chunk)
+              chunk = []
+              await asyncio.sleep(0)    # yield to event loop
+      if chunk:
+          yield "".join(chunk)          # flush remainder
+
+  return StreamingResponse(
+      csv_generator(params),
+      media_type="text/csv",
+      headers={"Content-Disposition": f"attachment; filename=transactions_{from_dt}_{to_dt}.csv"}
+  )
+
+--------------------------------------------------------------------------------
+Task 6.4 — Unit Tests for Query Layer
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate pytest unit tests in tests/unit/test_query.py. Mock
+  elasticsearch_service and cache_service. Test cases:
+  (1) exact lookup -> 200, X-Cache: MISS;
+  (2) second call same key -> 200, X-Cache: HIT;
+  (3) not found -> 404 RFC 7807;
+  (4) pagination — verify total, page, hasNext fields;
+  (5) range > 90 days -> 400;
+  (6) range returning > 10000 results -> 400 with download hint;
+  (7) download CSV -> StreamingResponse, Content-Disposition set, first line
+      is header row;
+  (8) download JSONL -> each line is valid JSON."
+
+  pytest tests/unit/ -v --cov=src --cov-report=term-missing
+
+  git add .
+  git commit -m "feat: Phase 6 complete — query endpoints, caching, streaming download"
+  git push origin main
+
+
+================================================================================
+  PHASE 7 — OBSERVABILITY STACK
+================================================================================
+
+GOAL: OTel traces visible in Jaeger UI, Prometheus scraping all targets,
+Grafana dashboards showing key metrics, Alertmanager rules configured.
+
+--------------------------------------------------------------------------------
+Task 7.1 — OpenTelemetry Instrumentation
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate complete OTel setup in src/api/core/telemetry.py. Requirements:
+  (1) configure_tracing(settings) — OTLPSpanExporter to OTLP endpoint,
+      BatchSpanProcessor, Resource with service.name and service.version;
+  (2) Instrument FastAPI with FastAPIInstrumentor, exclude /health from tracing;
+  (3) @traced_operation(name) decorator for service methods;
+  (4) inject trace_id into structlog context so every log line carries trace_id;
+  (5) propagate trace context to Kafka headers on produce using
+      TraceContextTextMapPropagator (W3C format: traceparent, tracestate);
+  (6) wrap Redis calls with child spans."
+
+--------------------------------------------------------------------------------
+Task 7.2 — Prometheus Custom Metrics
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate Prometheus metrics in src/api/core/metrics.py using prometheus-
+  fastapi-instrumentator plus custom metrics:
+  (1) kafka_produce_total Counter with labels topic, status;
+  (2) kafka_produce_duration_seconds Histogram;
+  (3) redis_cache_hits_total / redis_cache_misses_total Counters with label
+      endpoint;
+  (4) dedup_hits_total Counter;
+  (5) es_query_duration_seconds Histogram with label operation;
+  (6) active_download_streams Gauge.
+  Expose /metrics endpoint — exclude from auth middleware."
+
+--------------------------------------------------------------------------------
+Task 7.3 — Grafana Dashboard
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a Grafana dashboard JSON in infrastructure/grafana/credit-platform-
+  dashboard.json. Panels: (1) API Request Rate by endpoint; (2) API Error Rate
+  % (4xx and 5xx); (3) API Latency p50/p95/p99; (4) Kafka Consumer Lag by
+  consumer group; (5) Kafka Messages Produced/s; (6) ES Indexing Rate;
+  (7) ES Search Latency p95; (8) Redis Cache Hit Rate %; (9) Pod CPU & Memory;
+  (10) DLQ Message Count (highlight red if > 0). Data source: Prometheus."
+
+--------------------------------------------------------------------------------
+Task 7.4 — Alertmanager Rules
+--------------------------------------------------------------------------------
+
+Create infrastructure/prometheus/alerts.yaml:
+
+  groups:
+    - name: credit-platform-alerts
+      rules:
+        - alert: HighAPIErrorRate
+          expr: >
+            rate(http_requests_total{status=~"5.."}[5m])
+            / rate(http_requests_total[5m]) > 0.05
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "API 5xx error rate above 5% for 5 minutes"
+
+        - alert: KafkaConsumerLagHigh
+          expr: kafka_consumer_lag_sum > 10000
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Kafka consumer lag > 10000 — KEDA should be scaling"
+
+        - alert: DLQHasMessages
+          expr: kafka_consumer_lag_sum{topic="credit.transactions.dlq.v1"} > 0
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "DLQ has messages — investigation required"
+
+        - alert: ESClusterUnhealthy
+          expr: elasticsearch_cluster_health_status{color!="green"} == 1
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "Elasticsearch cluster status is not green"
+
+        - alert: PodOOMKilled
+          expr: >
+            kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}
+            == 1
+          for: 0m
+          labels: { severity: critical }
+          annotations:
+            summary: "Pod OOMKilled — increase memory limits"
+
+        - alert: VaultSealed
+          expr: vault_core_unsealed == 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "Vault is sealed — all secret injection will fail"
+
+        - alert: RedisMemoryHigh
+          expr: >
+            redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "Redis memory above 80% — review cache TTLs"
+
+--------------------------------------------------------------------------------
+Task 7.5 — Verify Observability
+--------------------------------------------------------------------------------
+
+  # Jaeger UI
+  kubectl port-forward -n observability svc/jaeger-query 16686:16686 &
+  open http://localhost:16686
+
+  # Grafana
+  kubectl port-forward -n observability svc/grafana 3000:3000 &
+  open http://localhost:3000    # default: admin / prom-operator
+
+  # Make some API calls, then check Jaeger for traces
+  curl -X POST http://localhost:8000/transactions \
+    -H "X-API-Key: your-api-key" \
+    -H "Content-Type: application/json" \
+    -d '{"applicationNumber":"APP002","requestId":"REQ001"}'
+
+  git add .
+  git commit -m "feat: Phase 7 complete — OTel, Prometheus metrics, Grafana, alerts"
+  git push origin main
+
+
+================================================================================
+  PHASE 8 — WEB UI
+================================================================================
+
+GOAL: 3-page Vue 3 SPA works — Search & Download, Create Transaction, Detail.
+Auth flow works with JWT stored in memory (NOT localStorage).
+
+SECURITY RULE: NEVER store JWT in localStorage or sessionStorage — both are
+vulnerable to XSS. Store only in Vue reactive memory. On page refresh the user
+must re-login (or use httpOnly cookies for persistence).
+
+--------------------------------------------------------------------------------
+Task 8.1 — Vue 3 SPA
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a Vue 3 SPA using CDN imports (no build tool, uses importmap) in
+  src/web/static/index.html. Pages:
+  (1) Login — username/password form, calls POST /auth/token, stores JWT in
+      Vue reactive state (NOT localStorage or sessionStorage);
+  (2) Search & Download — date range pickers, filter dropdowns (producttype,
+      employmentType, city, score range slider), paginated results table with
+      column sorting, Export CSV button and Export JSONL button that trigger
+      browser streaming download via fetch() with ReadableStream;
+  (3) Create Transaction — form with all fields, client-side validation
+      mirroring server rules, submit calls POST /transactions, shows 202
+      success with compositeKey and traceId, shows 409 duplicate error clearly;
+  (4) Transaction Detail — all fields displayed, copy-to-clipboard for
+      compositeKey and traceId, external link to Jaeger trace.
+  Navigation guard: redirect to Login if no token in memory.
+  All fetch() calls use Authorization: Bearer {token} header."
+
+--------------------------------------------------------------------------------
+Task 8.2 — FastAPI Static File Serving (Dev)
+--------------------------------------------------------------------------------
+
+Add to src/api/main.py (after all API routers are registered):
+
+  from fastapi.staticfiles import StaticFiles
+  from fastapi.responses import FileResponse
+
+  app.mount("/static", StaticFiles(directory="src/web/static"), name="static")
+
+  @app.get("/{full_path:path}", include_in_schema=False)
+  async def serve_spa(full_path: str):
+      return FileResponse("src/web/static/index.html")
+
+--------------------------------------------------------------------------------
+Task 8.3 — Nginx Dockerfile (Kubernetes)
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a minimal Nginx Dockerfile for the Vue 3 SPA in src/web/Dockerfile.
+  Requirements: base image nginx:1.25-alpine, copy src/web/static/ to
+  /usr/share/nginx/html/, nginx.conf that: serves index.html for all non-asset
+  routes (SPA routing), sets Cache-Control: no-cache for HTML, 1-year cache for
+  assets with content hash, proxies /api/* to http://credit-api:8000/. Run as
+  non-root user (nginx user). Include a healthcheck."
+
+  git add .
+  git commit -m "feat: Phase 8 complete — Vue 3 SPA, auth flow, Nginx Dockerfile"
+  git push origin main
+
+
+================================================================================
+  PHASE 9 — CI/CD PIPELINE
+================================================================================
+
+GOAL: Every PR runs full CI. Merge to main pushes image to GHCR and ArgoCD
+auto-syncs the cluster.
+
+--------------------------------------------------------------------------------
+Task 9.1 — CI Workflow
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a complete GitHub Actions CI workflow in .github/workflows/ci.yaml.
+  Trigger: on pull_request to main. Jobs (in order with 'needs' dependencies):
+  (1) lint-and-typecheck: setup Python 3.12, run 'ruff check src/', 'ruff
+      format --check src/', 'mypy --strict src/'; timeout-minutes: 10;
+  (2) unit-tests: run 'pytest tests/unit --cov=src --cov-fail-under=80
+      --cov-report=xml', upload coverage XML as artifact; timeout-minutes: 15;
+  (3) build-image: setup QEMU + buildx for multi-arch (linux/amd64 +
+      linux/arm64), login to GHCR, build image tagged with SHA and PR number,
+      push only on non-fork PRs; timeout-minutes: 20;
+  (4) scan-image: needs build-image, run Trivy on built image, fail on CRITICAL
+      severity, upload SARIF to GitHub Security tab; timeout-minutes: 10;
+  (5) contract-tests: run openapi-spec-validator, check Schema Registry
+      compatibility via API call; timeout-minutes: 10.
+  Cache pip deps between runs using actions/cache."
+
+--------------------------------------------------------------------------------
+Task 9.2 — CD Workflow
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a GitHub Actions CD workflow in .github/workflows/cd.yaml. Trigger:
+  on push to main (with 'needs: [ci]' to ensure CI passed). Steps:
+  (1) checkout with fetch-depth=0;
+  (2) extract short git SHA;
+  (3) login to GHCR;
+  (4) build and push multi-arch image tagged with git SHA and 'latest';
+  (5) update infrastructure/helm/credit-api/values.yaml image.tag field using
+      yq;
+  (6) git commit and push the values.yaml change back to main with commit
+      message 'chore(cd): update credit-api image to {sha} [skip ci]';
+  ArgoCD detects the Git change automatically — no explicit ArgoCD CLI step."
+
+--------------------------------------------------------------------------------
+Task 9.3 — Install & Configure ArgoCD
+--------------------------------------------------------------------------------
+
+  kubectl create namespace argocd
+
+  kubectl apply -n argocd \
+    -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+  kubectl wait --for=condition=Ready pod \
+    -l app.kubernetes.io/name=argocd-server \
+    -n argocd --timeout=180s
+
+  argocd admin initial-password -n argocd    # get initial password
+
+  kubectl port-forward svc/argocd-server -n argocd 8443:443 &
+  argocd login localhost:8443 --username admin --insecure
+
+Create infrastructure/argocd/credit-api-app.yaml:
+
+  apiVersion: argoproj.io/v1alpha1
+  kind: Application
+  metadata:
+    name: credit-api
+    namespace: argocd
+  spec:
+    project: default
+    source:
+      repoURL: https://github.com/YOUR_ORG/credit-transaction-platform
+      targetRevision: main
+      path: infrastructure/helm/credit-api
+      helm:
+        valueFiles: [values.yaml]
+    destination:
+      server: https://kubernetes.default.svc
+      namespace: credit-platform
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      syncOptions:
+        - CreateNamespace=true
+
+  kubectl apply -f infrastructure/argocd/credit-api-app.yaml
+  argocd app sync credit-api      # force initial sync
+  argocd app get credit-api       # check status
+
+--------------------------------------------------------------------------------
+Task 9.4 — Dependabot
+--------------------------------------------------------------------------------
+
+Create .github/dependabot.yaml:
+
+  version: 2
+  updates:
+    - package-ecosystem: pip
+      directory: /
+      schedule: { interval: weekly }
+      labels: [dependencies, python]
+      open-pull-requests-limit: 10
+
+    - package-ecosystem: docker
+      directory: /
+      schedule: { interval: weekly }
+      labels: [dependencies, docker]
+
+    - package-ecosystem: github-actions
+      directory: /
+      schedule: { interval: weekly }
+      labels: [dependencies, github-actions]
+
+  git add .
+  git commit -m "feat: Phase 9 complete — CI/CD, ArgoCD GitOps, Dependabot"
+  git push origin main
+
+  gh run watch    # watch your first CI run
+
+
+================================================================================
+  PHASE 10 — TESTING & HARDENING
+================================================================================
+
+GOAL: Integration tests pass on live kind cluster, k6 documents baseline
+performance, security hardening applied, runbooks written.
+
+--------------------------------------------------------------------------------
+Task 10.1 — Seed Data
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate tests/fixtures/seed_transactions.json with 25 credit transaction
+  records. Distribution: 5+ distinct applicationNumbers (APP001-APP005), 4+
+  distinct producttypes (PersonalLoan, AutoLoan, CreditCard, Mortgage),
+  datetime spread across last 90 days, all employmentType enum values present,
+  edge cases: score=300, score=900, one record with all optional fields null.
+  Also generate tests/fixtures/malformed_messages.json with 5 entries
+  representing: missing applicationNumber, invalid Avro bytes, null requestId,
+  score out of range, unknown employmentType."
+
+--------------------------------------------------------------------------------
+Task 10.2 — Integration Tests
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate integration tests in tests/integration/ using pytest + httpx that
+  run against the live local API at http://localhost:8000. conftest.py should:
+  port-forward all services before test session, seed data from fixture file,
+  clean up test data after session. Test these 7 scenarios:
+  (1) POST valid tx -> verify Kafka message received -> verify ES doc exists;
+  (2) POST duplicate -> 409, Kafka NOT called (check with mock or Kafka spy);
+  (3) Send malformed message directly to Kafka -> verify DLQ topic receives it;
+  (4) POST without auth -> 401;
+  (5) POST 501 times in 60s -> 501st returns 429 with Retry-After header;
+  (6) GET /download -> StreamingResponse, Transfer-Encoding: chunked, valid CSV;
+  (7) Simulate ES down (scale to 0 replicas) -> Logstash routes to DLQ ->
+      DLQ Prometheus metric increments."
+
+  pytest tests/integration/ -v --tb=short -x
+
+--------------------------------------------------------------------------------
+Task 10.3 — Load Testing with k6
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate a k6 load test script in tests/load/load_test.js. Three scenarios:
+  (1) Ingest load: 50 VUs, 5 minutes, POST /transactions with randomized
+      applicationNumbers, thresholds: p95 < 200ms, error_rate < 1%;
+  (2) Query load: 200 VUs, 3 minutes, GET /transactions?applicationNumber=
+      APP{random(1,5)}, thresholds: p95 < 150ms;
+  (3) Mixed: 80% reads, 20% writes, 100 VUs, 5 minutes.
+  Output summary to stdout and JSON to tests/load/results.json."
+
+  k6 run tests/load/load_test.js --out json=tests/load/results.json
+
+--------------------------------------------------------------------------------
+Task 10.4 — KEDA ScaledObject
+--------------------------------------------------------------------------------
+
+Create infrastructure/k8s/keda-scaledobject.yaml:
+
+  apiVersion: keda.sh/v1alpha1
+  kind: ScaledObject
+  metadata:
+    name: logstash-kafka-scaler
+    namespace: data-pipeline
+  spec:
+    scaleTargetRef:
+      name: logstash
+    minReplicaCount: 1
+    maxReplicaCount: 10
+    cooldownPeriod: 300
+    triggers:
+      - type: kafka
+        metadata:
+          bootstrapServers: kafka.data-pipeline.svc.cluster.local:9092
+          consumerGroup: logstash-credit-consumer
+          topic: credit.transactions.v1
+          lagThreshold: "1000"
+          offsetResetPolicy: latest
+
+  kubectl apply -f infrastructure/k8s/keda-scaledobject.yaml
+  kubectl get scaledobject -n data-pipeline    # verify
+
+--------------------------------------------------------------------------------
+Task 10.5 — Network Policies
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate Kubernetes NetworkPolicy manifests in infrastructure/k8s/network-
+  policies/. Rules:
+  (1) credit-platform namespace: allow ingress from ingress-controller on
+      port 8000 only; allow egress to data-pipeline (9092, 8081), data-store
+      (9200, 6379), security (8200), observability (4317);
+  (2) data-pipeline namespace: allow ingress from credit-platform only;
+  (3) data-store namespace: allow ingress from credit-platform and data-pipeline;
+  (4) All other traffic denied by default (include a default-deny policy for
+      each namespace)."
+
+  kubectl apply -f infrastructure/k8s/network-policies/
+  kubectl get networkpolicies --all-namespaces    # verify all applied
+
+--------------------------------------------------------------------------------
+Task 10.6 — Runbooks
+--------------------------------------------------------------------------------
+
+CLAUDE PROMPT:
+  "Generate operational runbooks as Markdown files in docs/runbooks/:
+  (1) vault-unseal.md — steps to unseal Vault after cluster restart, how to
+      recover if root token is lost;
+  (2) dlq-recovery.md — how to inspect DLQ messages with kafka-console-consumer,
+      diagnose root cause, fix, replay valid messages back to main topic;
+  (3) elasticsearch-red.md — diagnose red cluster status, recover unassigned
+      shards, check disk space, force reroute commands;
+  (4) incident-response.md — incident levels, who to notify, how to rollback
+      via ArgoCD (git revert + force sync), how to disable ingest endpoint
+      temporarily using feature flag."
+
+--------------------------------------------------------------------------------
+Task 10.7 — Final Verification Checklist
+--------------------------------------------------------------------------------
+
+Run through every item below before declaring the build complete:
+
+  [ ] curl http://localhost:8000/health | jq .status
+      Expected: "healthy"
+
+  [ ] POST /auth/token -> use JWT -> GET /transactions
+      Expected: 200 response
+
+  [ ] POST transaction -> wait 10s -> GET /transactions/APP001/REQ001
+      Expected: document appears in ES
+
+  [ ] POST same transaction twice
+      Expected: first 202, second 409
+
+  [ ] POST 501 times in 1 minute
+      Expected: 501st returns 429 with Retry-After header
+
+  [ ] Send malformed Avro bytes to Kafka topic
+      Expected: appears in DLQ topic, NOT in ES
+
+  [ ] GET /transactions/download?from=...&to=...&format=csv
+      Expected: Transfer-Encoding: chunked, first line is header row
+
+  [ ] Open Jaeger UI after API calls
+      Expected: traces visible with child spans
+
+  [ ] Open Grafana -> API latency panel
+      Expected: data populating in real time
+
+  [ ] Scale Kafka lag > 5000 (produce many messages faster than consumer)
+      Expected: KEDA increases Logstash replica count
+
+  [ ] Change image tag in values.yaml, push to main
+      Expected: ArgoCD auto-syncs within 3 minutes
+
+  [ ] Open a PR with a linting error
+      Expected: CI fails, merge is blocked
+
+  [ ] Check GitHub Security tab
+      Expected: Dependabot PRs for any outdated dependencies
+
+  git add .
+  git commit -m "feat: Phase 10 complete — integration tests, load tests, hardening"
+  git push origin main
+
+
+================================================================================
+  WORKING WITH CLAUDE IN VS CODE — BEST PRACTICES
+================================================================================
+
+KEY PRINCIPLE: Give Claude one focused task at a time with full context. Never
+ask Claude to build the entire app in one prompt. Use the specific prompts shown
+in each phase.
+
+Effective prompting patterns:
+
+  GENERATING A NEW FILE
+    State: filename, purpose, all requirements, what it integrates with.
+    Example: "Generate src/api/services/dedup_service.py. It must use async
+    Redis, implement SETNX with 24h TTL, return True if new key, False if
+    duplicate. It is called from the ingest router after auth passes."
+
+  FIXING A BUG
+    Paste: the error message + the relevant file + expected behavior.
+    Example: "This function throws KeyError: 'applicationNumber'. Here is the
+    code: [paste]. Expected: it should return None if the field is missing."
+
+  ADDING A FEATURE
+    Show: existing file + what to add + constraints.
+    Example: "Here is my existing router [paste]. Add rate limiting using
+    slowapi with 500/minute per API key stored in Redis."
+
+  WRITING TESTS
+    Share: the implementation + list every test case.
+    Example: "Here is the service [paste]. Write tests covering: valid input
+    202, duplicate 409, Kafka failure 503, missing field 400, unauthenticated 401."
+
+  CODE REVIEW
+    Ask Claude to review specifically for one concern at a time.
+    Example: "Review this for security issues only [paste]. Focus on: auth
+    bypass risks, input validation gaps, secrets handling."
+
+  DEBUGGING
+    Share: logs + code + what you already tried.
+    Example: "Getting KafkaTimeoutError [paste log]. Here is my producer config
+    [paste]. I already tried increasing linger_ms to 10."
+
+--------------------------------------------------------------------------------
+Git Workflow
+--------------------------------------------------------------------------------
+
+Branch naming:
+  feat/phase-1-scaffold
+  feat/phase-4-ingest-endpoint
+  fix/kafka-producer-retry
+  chore/update-dependencies
+  hotfix/auth-bypass-critical
+
+Standard flow for each task:
+  git checkout -b feat/phase-X-task-description
+  # ... do the work ...
+  git add .
+  git commit -m "feat(scope): what was done"
+  git push origin feat/phase-X-task-description
+  gh pr create --fill
+  # Review CI, fix any failures
+  gh pr merge --squash
+
+Commit message convention (Conventional Commits):
+  feat:     new feature or endpoint
+  fix:      bug fix
+  test:     adding or fixing tests
+  chore:    infrastructure, config, dependencies
+  docs:     documentation
+  refactor: code restructure, no behavior change
+  perf:     performance improvement
+  ci:       CI/CD changes
+
+Examples:
+  feat(auth): add JWT refresh token endpoint
+  fix(dedup): handle Redis timeout gracefully
+  test(integration): add DLQ routing test scenario
+  chore(helm): pin Kafka chart version to 26.4.1
+  docs(runbook): add Vault unseal procedure
+  perf(cache): switch from json.dumps to orjson
+
+
+================================================================================
+  QUICK REFERENCE — PORT FORWARDING CHEATSHEET
+================================================================================
+
+Run these to access services locally during development:
+
+  kubectl port-forward -n security svc/vault 8200:8200 &
+  kubectl port-forward -n data-pipeline svc/kafka 9092:9092 &
+  kubectl port-forward -n data-pipeline svc/schema-registry 8081:8081 &
+  kubectl port-forward -n data-store svc/elasticsearch 9200:9200 &
+  kubectl port-forward -n data-store svc/kibana 5601:5601 &
+  kubectl port-forward -n data-store svc/redis-master 6379:6379 &
+  kubectl port-forward -n observability svc/jaeger-query 16686:16686 &
+  kubectl port-forward -n observability svc/grafana 3000:3000 &
+  kubectl port-forward -n observability svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+  kubectl port-forward -n argocd svc/argocd-server 8443:443 &
+
+Then open:
+  API docs    : http://localhost:8000/docs
+  Web UI      : http://localhost:8000
+  Kibana      : http://localhost:5601
+  Grafana     : http://localhost:3000
+  Jaeger      : http://localhost:16686
+  Prometheus  : http://localhost:9090
+  ArgoCD      : https://localhost:8443
+  Vault       : http://localhost:8200
+  Schema Reg  : http://localhost:8081
+
+
+================================================================================
+  END OF GUIDE
+================================================================================
+  Build Guide v1.0 | Credit Transaction Platform | Production Grade | 100% OSS
+================================================================================
