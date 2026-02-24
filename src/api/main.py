@@ -216,9 +216,9 @@ def create_app() -> FastAPI:
         app.mount("/static", StaticFiles(directory=_spa_dir), name="spa-static")
         logger.info("spa_static_files_mounted", directory=_spa_dir)
 
-    @app.get("/ui", include_in_schema=False)
-    @app.get("/ui/{path:path}", include_in_schema=False)
-    async def serve_spa(path: str = "") -> FileResponse | JSONResponse:
+    @app.get("/ui", include_in_schema=False, response_class=Response)
+    @app.get("/ui/{path:path}", include_in_schema=False, response_class=Response)
+    async def serve_spa(path: str = "") -> Response:
         """Serve the Vue 3 SPA for all /ui/* routes (client-side routing)."""
         if os.path.isfile(_spa_index):
             return FileResponse(_spa_index, media_type="text/html")

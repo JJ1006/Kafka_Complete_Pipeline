@@ -38,14 +38,13 @@ class KafkaProducerService:
             # Initialize producer with idempotence enabled
             self.producer = AIOKafkaProducer(
                 bootstrap_servers=self.settings.kafka_bootstrap_servers,
+                client_id="credit-api-producer",
                 acks="all",  # Wait for all in-sync replicas
-                compression_type="snappy",
+                compression_type="gzip",
                 linger_ms=5,
-                batch_size=65536,
+                max_batch_size=16384,
                 enable_idempotence=True,
-                max_in_flight_requests_per_connection=5,
-                retries=2147483647,
-                delivery_timeout_ms=120000,
+                request_timeout_ms=30000,
             )
             await self.producer.start()
 
