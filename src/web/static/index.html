@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Credit Transaction Platform</title>
+  <meta name="description" content="Internal credit transaction search, ingest, and analytics dashboard" />
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- Vue 3 via ESM CDN -->
+  <script type="importmap">
+  {
+    "imports": {
+      "vue": "https://unpkg.com/vue@3.4.21/dist/vue.esm-browser.prod.js"
+    }
+  }
+  </script>
+  <style>
+    /* ── Reset & Tokens ─────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:        #0d0f14;
+      --surface:   #161922;
+      --surface2:  #1e2330;
+      --border:    rgba(255,255,255,0.07);
+      --primary:   #6366f1;
+      --primary-d: #4f46e5;
+      --accent:    #38bdf8;
+      --success:   #22c55e;
+      --danger:    #ef4444;
+      --warn:      #f59e0b;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --radius:    12px;
+      --shadow:    0 4px 24px rgba(0,0,0,0.4);
+      --font:      'Inter', system-ui, sans-serif;
+      --transition: 180ms ease;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 15px; }
+    #app { height: 100%; }
+
+    /* ── Utility ─────────────────────────────────────────── */
+    .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer;
+      font-family: var(--font); font-size: 14px; font-weight: 500;
+      transition: var(--transition); text-decoration: none;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-d); }
+    .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-ghost:hover { background: var(--surface2); color: var(--text); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-sm { padding: 5px 12px; font-size: 13px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow);
+    }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 99px;
+      font-size: 12px; font-weight: 600; letter-spacing: 0.4px;
+    }
+    .badge-green  { background: rgba(34,197,94,.15); color: var(--success); }
+    .badge-blue   { background: rgba(99,102,241,.15); color: var(--primary); }
+    .badge-yellow { background: rgba(245,158,11,.15); color: var(--warn); }
+    .badge-red    { background: rgba(239,68,68,.15);  color: var(--danger); }
+    input, select {
+      width: 100%; padding: 9px 14px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); font-family: var(--font); font-size: 14px;
+      outline: none; transition: var(--transition);
+    }
+    input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,102,241,.2); }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+    .form-group { margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { text-align: left; padding: 10px 14px; color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border); }
+    td { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    tr:hover td { background: var(--surface2); }
+    .alert { padding: 12px 16px; border-radius: 8px; font-size: 14px; margin-bottom: 16px; }
+    .alert-danger  { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.3); color: #fca5a5; }
+    .alert-success { background: rgba(34,197,94,.12); border: 1px solid rgba(34,197,94,.3); color: #86efac; }
+    .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Layout ──────────────────────────────────────────── */
+    .layout { display: flex; flex-direction: column; height: 100%; }
+    nav {
+      display: flex; align-items: center; gap: 8px; padding: 0 28px; height: 60px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 100;
+    }
+    nav .brand { font-size: 16px; font-weight: 700; color: var(--text); margin-right: 24px; letter-spacing: -0.3px; }
+    nav .brand span { color: var(--primary); }
+    .nav-link { padding: 6px 12px; border-radius: 7px; font-size: 14px; color: var(--muted); cursor: pointer; transition: var(--transition); user-select: none; }
+    .nav-link:hover { background: var(--surface2); color: var(--text); }
+    .nav-link.active { background: rgba(99,102,241,.12); color: var(--primary); font-weight: 500; }
+    .nav-spacer { flex: 1; }
+    .user-chip { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+    .user-chip span { color: var(--text); font-weight: 500; }
+    main { flex: 1; overflow-y: auto; padding: 28px; max-width: 1200px; margin: 0 auto; width: 100%; }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { createApp, ref, reactive, computed, onMounted, watch } from 'vue';
+
+/* ── Constants ──────────────────────────────────────────── */
+const API_BASE = '/api';
+
+/* ── Auth Store (JWT in memory ONLY — never localStorage) ── */
+const auth = reactive({ token: null, user: null });
+
+const authHeaders = () => auth.token ? { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+const isAuthenticated = computed(() => !!auth.token);
+
+async function login(username, password) {
+  const r = await fetch(`${API_BASE}/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ username, password }),
+  });
+  if (!r.ok) throw new Error((await r.json()).detail || 'Login failed');
+  const data = await r.json();
+  auth.token = data.access_token;
+  auth.user  = username;
+}
+
+function logout() { auth.token = null; auth.user = null; currentPage.value = 'login'; }
+
+/* ── Router (simple SPA state) ──────────────────────────── */
+const currentPage = ref('login');
+
+watch(isAuthenticated, (v) => { if (!v) currentPage.value = 'login'; });
+
+/* ── API helpers ───────────────────────────────────────── */
+async function apiGet(path) {
+  const r = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
+  if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
+  return r.json();
+}
+async function apiPost(path, body) {
+  const r = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
+  return r.json();
+}
+
+/* ── Login Page ─────────────────────────────────────────── */
+const LoginPage = {
+  setup() {
+    const form = reactive({ username: '', password: '' });
+    const error = ref('');
+    const loading = ref(false);
+    async function submit() {
+      error.value = '';
+      loading.value = true;
+      try {
+        await login(form.username, form.password);
+        currentPage.value = 'search';
+      } catch(e) {
+        error.value = e.message;
+      } finally {
+        loading.value = false;
+      }
+    }
+    return { form, error, loading, submit };
+  },
+  template: `
+    <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg)">
+      <div class="card" style="width:100%;max-width:400px">
+        <div style="text-align:center;margin-bottom:28px">
+          <div style="font-size:32px;font-weight:800;letter-spacing:-1px">Credit<span style="color:var(--primary)">Tx</span></div>
+          <div style="color:var(--muted);font-size:14px;margin-top:4px">Sign in to your account</div>
+        </div>
+        <div v-if="error" class="alert alert-danger" id="login-error">{{ error }}</div>
+        <form @submit.prevent="submit" id="login-form">
+          <div class="form-group">
+            <label for="username">Username</label>
+            <input id="username" v-model="form.username" type="text" placeholder="admin" autocomplete="username" required />
+          </div>
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input id="password" v-model="form.password" type="password" placeholder="••••••••" autocomplete="current-password" required />
+          </div>
+          <button id="login-btn" type="submit" class="btn btn-primary" style="width:100%;justify-content:center" :disabled="loading">
+            <span v-if="loading" class="spinner" style="width:16px;height:16px"></span>
+            <span v-else>Sign in</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  `
+};
+
+/* ── Search & Download Page ─────────────────────────────── */
+const SearchPage = {
+  setup() {
+    const filters = reactive({ application_number: '', from_date: '', to_date: '', employment_type: '', product_type: '', format: 'csv' });
+    const results = ref(null);
+    const loading = ref(false);
+    const error = ref('');
+    const downloading = ref(false);
+    const EMPLOYMENT_TYPES = ['Salaried', 'SelfEmployed', 'Unemployed', 'Student', 'Other'];
+    const PRODUCT_TYPES    = ['PersonalLoan', 'HomeLoan', 'CarLoan', 'CreditCard', 'BusinessLoan'];
+
+    async function search() {
+      error.value = ''; loading.value = true; results.value = null;
+      try {
+        if (filters.application_number) {
+          results.value = await apiGet(`/transactions?application_number=${encodeURIComponent(filters.application_number)}`);
+        } else if (filters.from_date && filters.to_date) {
+          const p = new URLSearchParams({ from_date: filters.from_date, to_date: filters.to_date });
+          if (filters.employment_type) p.append('employment_type', filters.employment_type);
+          if (filters.product_type)    p.append('product_type', filters.product_type);
+          results.value = await apiGet(`/transactions/range?${p}`);
+        } else {
+          throw new Error('Provide an Application Number OR a date range.');
+        }
+      } catch(e) { error.value = e.message; }
+      finally { loading.value = false; }
+    }
+
+    async function download() {
+      if (!filters.from_date || !filters.to_date) { error.value = 'Date range required for download.'; return; }
+      downloading.value = true; error.value = '';
+      try {
+        const p = new URLSearchParams({ from_date: filters.from_date, to_date: filters.to_date, format: filters.format });
+        const r = await fetch(`${API_BASE}/transactions/download?${p}`, { headers: authHeaders() });
+        if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `transactions.${filters.format}`; a.click();
+        URL.revokeObjectURL(url);
+      } catch(e) { error.value = e.message; }
+      finally { downloading.value = false; }
+    }
+
+    function viewDetail(tx) { selectedTx.value = tx; currentPage.value = 'detail'; }
+
+    return { filters, results, loading, error, downloading, search, download, viewDetail, EMPLOYMENT_TYPES, PRODUCT_TYPES };
+  },
+  template: `
+    <div>
+      <h1>Search Transactions</h1>
+      <p class="subtitle">Query by application number or date range</p>
+      <div class="card" style="margin-bottom:20px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
+          <div class="form-group" style="margin:0">
+            <label for="app-num">Application Number</label>
+            <input id="app-num" v-model="filters.application_number" placeholder="APP-001" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label for="from-date">From Date</label>
+            <input id="from-date" v-model="filters.from_date" type="datetime-local" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label for="to-date">To Date</label>
+            <input id="to-date" v-model="filters.to_date" type="datetime-local" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label for="emp-type">Employment Type</label>
+            <select id="emp-type" v-model="filters.employment_type">
+              <option value="">Any</option>
+              <option v-for="t in EMPLOYMENT_TYPES" :key="t" :value="t">{{ t }}</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label for="prod-type">Product Type</label>
+            <select id="prod-type" v-model="filters.product_type">
+              <option value="">Any</option>
+              <option v-for="t in PRODUCT_TYPES" :key="t" :value="t">{{ t }}</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+          <button id="search-btn" class="btn btn-primary" @click="search" :disabled="loading">
+            <span v-if="loading" class="spinner" style="width:14px;height:14px"></span>
+            <span v-else>Search</span>
+          </button>
+          <select id="format-select" v-model="filters.format" style="width:auto;padding:8px 12px">
+            <option value="csv">CSV</option>
+            <option value="jsonl">JSONL</option>
+          </select>
+          <button id="download-btn" class="btn btn-ghost" @click="download" :disabled="downloading">
+            <span v-if="downloading" class="spinner" style="width:14px;height:14px"></span>
+            <span v-else>⬇ Download</span>
+          </button>
+        </div>
+      </div>
+      <div v-if="error" class="alert alert-danger" id="search-error">{{ error }}</div>
+      <div v-if="results" class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <span style="font-weight:600">Results <span style="color:var(--muted)">({{ results.total }} total)</span></span>
+          <span class="badge badge-blue">{{ results.cache_status === 'HIT' ? '⚡ Cache HIT' : '🔍 Cache MISS' }}</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table id="results-table">
+            <thead>
+              <tr>
+                <th>App #</th><th>Request ID</th><th>Score</th><th>Loan Amount</th>
+                <th>Employment</th><th>Product</th><th>Ingested At</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="tx in (results.data || [])" :key="tx.application_number + tx.request_id">
+                <td style="font-weight:600">{{ tx.application_number }}</td>
+                <td style="color:var(--muted);font-size:13px">{{ tx.request_id }}</td>
+                <td>
+                  <span class="badge" :class="tx.transunion_score >= 700 ? 'badge-green' : tx.transunion_score >= 600 ? 'badge-yellow' : 'badge-red'">
+                    {{ tx.transunion_score }}
+                  </span>
+                </td>
+                <td>{{ Number(tx.loan_amount).toLocaleString('en-US', {style:'currency',currency:'USD'}) }}</td>
+                <td>{{ tx.employment_type }}</td>
+                <td>{{ tx.product_type }}</td>
+                <td style="font-size:13px;color:var(--muted)">{{ new Date(tx.ingested_at).toLocaleString() }}</td>
+                <td><button class="btn btn-ghost btn-sm" @click="viewDetail(tx)">View</button></td>
+              </tr>
+              <tr v-if="!(results.data && results.data.length)">
+                <td colspan="8" style="text-align:center;color:var(--muted);padding:28px">No results found</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `
+};
+
+/* ── Create Transaction Page ─────────────────────────────── */
+const CreatePage = {
+  setup() {
+    const form = reactive({
+      application_number: '', request_id: '', transunion_score: 700,
+      loan_amount: 25000, tenure_months: 36, interest_rate_apr: 9.5,
+      employment_type: 'Salaried', product_type: 'PersonalLoan',
+      customer_city: '', income_monthly: '', existing_debt: ''
+    });
+    const result = ref(null);
+    const error  = ref('');
+    const loading = ref(false);
+    const EMPLOYMENT_TYPES = ['Salaried', 'SelfEmployed', 'Unemployed', 'Student', 'Other'];
+    const PRODUCT_TYPES    = ['PersonalLoan', 'HomeLoan', 'CarLoan', 'CreditCard', 'BusinessLoan'];
+
+    async function submit() {
+      error.value = ''; loading.value = true; result.value = null;
+      try {
+        const body = { ...form };
+        if (body.income_monthly) body.income_monthly = parseFloat(body.income_monthly);
+        if (body.existing_debt)  body.existing_debt  = parseFloat(body.existing_debt);
+        else delete body.existing_debt;
+        result.value = await apiPost('/transactions', body);
+      } catch(e) { error.value = e.message; }
+      finally { loading.value = false; }
+    }
+
+    return { form, result, error, loading, submit, EMPLOYMENT_TYPES, PRODUCT_TYPES };
+  },
+  template: `
+    <div>
+      <h1>Create Transaction</h1>
+      <p class="subtitle">Submit a new credit transaction for processing</p>
+      <div v-if="error"  class="alert alert-danger"  id="create-error">{{ error }}</div>
+      <div v-if="result" class="alert alert-success" id="create-success">
+        ✓ Transaction accepted — Key: <strong>{{ result.composite_key }}</strong>
+      </div>
+      <div class="card">
+        <form @submit.prevent="submit" id="create-form">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="form-group">
+              <label for="c-app-num">Application Number *</label>
+              <input id="c-app-num" v-model="form.application_number" required placeholder="APP-001" />
+            </div>
+            <div class="form-group">
+              <label for="c-req-id">Request ID *</label>
+              <input id="c-req-id" v-model="form.request_id" required placeholder="REQ-001" />
+            </div>
+            <div class="form-group">
+              <label for="c-score">TransUnion Score (300–900) *</label>
+              <input id="c-score" v-model.number="form.transunion_score" type="number" min="300" max="900" required />
+            </div>
+            <div class="form-group">
+              <label for="c-loan">Loan Amount (USD) *</label>
+              <input id="c-loan" v-model.number="form.loan_amount" type="number" min="0" step="0.01" required />
+            </div>
+            <div class="form-group">
+              <label for="c-tenure">Tenure (months) *</label>
+              <input id="c-tenure" v-model.number="form.tenure_months" type="number" min="1" required />
+            </div>
+            <div class="form-group">
+              <label for="c-apr">Interest Rate APR *</label>
+              <input id="c-apr" v-model.number="form.interest_rate_apr" type="number" min="0" step="0.01" required />
+            </div>
+            <div class="form-group">
+              <label for="c-emp">Employment Type *</label>
+              <select id="c-emp" v-model="form.employment_type" required>
+                <option v-for="t in EMPLOYMENT_TYPES" :key="t" :value="t">{{ t }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="c-product">Product Type *</label>
+              <select id="c-product" v-model="form.product_type" required>
+                <option v-for="t in PRODUCT_TYPES" :key="t" :value="t">{{ t }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="c-city">City</label>
+              <input id="c-city" v-model="form.customer_city" placeholder="New York" />
+            </div>
+            <div class="form-group">
+              <label for="c-income">Monthly Income (USD)</label>
+              <input id="c-income" v-model="form.income_monthly" type="number" min="0" step="0.01" />
+            </div>
+            <div class="form-group">
+              <label for="c-debt">Existing Debt (USD)</label>
+              <input id="c-debt" v-model="form.existing_debt" type="number" min="0" step="0.01" />
+            </div>
+          </div>
+          <button id="create-btn" type="submit" class="btn btn-primary" :disabled="loading">
+            <span v-if="loading" class="spinner" style="width:14px;height:14px"></span>
+            <span v-else>Submit Transaction</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  `
+};
+
+/* ── Detail Page ─────────────────────────────────────────── */
+const selectedTx = ref(null);
+const DetailPage = {
+  setup() {
+    const tx = computed(() => selectedTx.value || {});
+    function goBack() { currentPage.value = 'search'; }
+    function scoreClass(s) { return s >= 700 ? 'badge-green' : s >= 600 ? 'badge-yellow' : 'badge-red'; }
+    const fields = [
+      ['Application Number', 'application_number'], ['Request ID', 'request_id'],
+      ['TransUnion Score', 'transunion_score'], ['Loan Amount', 'loan_amount'],
+      ['Tenure (months)', 'tenure_months'],  ['APR', 'interest_rate_apr'],
+      ['Employment', 'employment_type'],     ['Product', 'product_type'],
+      ['City', 'customer_city'],             ['Monthly Income', 'income_monthly'],
+      ['Existing Debt', 'existing_debt'],    ['Ingested At', 'ingested_at'],
+      ['Schema Version', 'schema_version'],  ['Source', 'source'],
+    ];
+    return { tx, goBack, scoreClass, fields };
+  },
+  template: `
+    <div>
+      <button id="back-btn" class="btn btn-ghost btn-sm" style="margin-bottom:20px" @click="goBack">← Back to Search</button>
+      <h1>Transaction Detail</h1>
+      <p class="subtitle" id="detail-key">{{ tx.application_number }} / {{ tx.request_id }}</p>
+      <div class="card">
+        <table id="detail-table">
+          <tbody>
+            <tr v-for="[label, key] in fields" :key="key">
+              <th style="width:200px;border-top:none">{{ label }}</th>
+              <td style="border-top:none">
+                <span v-if="key === 'transunion_score'" class="badge" :class="scoreClass(tx[key])">{{ tx[key] }}</span>
+                <span v-else-if="key === 'loan_amount' || key === 'income_monthly' || key === 'existing_debt'">
+                  {{ tx[key] ? Number(tx[key]).toLocaleString('en-US', {style:'currency',currency:'USD'}) : '—' }}
+                </span>
+                <span v-else-if="key === 'ingested_at'">{{ tx[key] ? new Date(tx[key]).toLocaleString() : '—' }}</span>
+                <span v-else>{{ tx[key] || '—' }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `
+};
+
+/* ── Root App ────────────────────────────────────────────── */
+const App = {
+  components: { LoginPage, SearchPage, CreatePage, DetailPage },
+  setup() {
+    const navLinks = [
+      { id: 'nav-search', page: 'search', label: '🔍 Search' },
+      { id: 'nav-create', page: 'create', label: '+ Create' },
+    ];
+    return { currentPage, isAuthenticated, auth, logout, navLinks };
+  },
+  template: `
+    <div class="layout">
+      <nav v-if="isAuthenticated">
+        <div class="brand">Credit<span>Tx</span></div>
+        <a v-for="l in navLinks" :key="l.page"
+           :id="l.id"
+           class="nav-link" :class="{active: currentPage === l.page}"
+           @click="currentPage = l.page">{{ l.label }}</a>
+        <div class="nav-spacer"></div>
+        <div class="user-chip">Signed in as <span>{{ auth.user }}</span></div>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" @click="logout">Sign out</button>
+      </nav>
+      <main>
+        <LoginPage  v-if="currentPage === 'login'"  />
+        <SearchPage v-if="currentPage === 'search'" />
+        <CreatePage v-if="currentPage === 'create'" />
+        <DetailPage v-if="currentPage === 'detail'" />
+      </main>
+    </div>
+  `
+};
+
+createApp(App).mount('#app');
+</script>
+</body>
+</html>

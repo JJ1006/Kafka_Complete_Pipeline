@@ -5,16 +5,42 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import status
-from fastapi.testclient import TestClient
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from httpx import ASGITransport, AsyncClient
 
-from src.api.main import app
+from src.api.routers import transactions
 
 
-@pytest.fixture
-def client() -> TestClient:
-    """Fixture for FastAPI test client."""
-    return TestClient(app)
+def build_app(
+    dedup_service: Any = None,
+    kafka_producer: Any = None,
+) -> FastAPI:
+    """Build a minimal FastAPI app with mocked services for unit tests.
+
+    Services are injected directly via set_services() — no lifespan needed.
+    """
+    # Wire mocked services into the scoped globals before building app
+    transactions.set_services(dedup_service, kafka_producer)
+
+    app = FastAPI(title="Test App", version="1.0.0")
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    )
+    app.include_router(transactions.router)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exc_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Strip 'ctx' field which may contain non-JSON-serializable Python objects
+        safe_errors = [{k: v for k, v in e.items() if k != "ctx"} for e in exc.errors()]
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": safe_errors},
+        )
+
+    return app
 
 
 @pytest.fixture
@@ -49,34 +75,27 @@ def headers_with_api_key() -> dict[str, str]:
 async def test_ingest_valid_transaction_async(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
-    """Test successful transaction ingest returns 202 Accepted (async)."""
-    from httpx import AsyncClient
+    """Test successful transaction ingest returns 202 Accepted."""
+    mock_dedup = AsyncMock()
+    mock_dedup.check_and_set.return_value = True
+    mock_dedup.get_cached_response.return_value = None
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        # Mock the global services
-        from src.api.routers import transactions
+    mock_producer = AsyncMock()
+    mock_producer.produce_transaction.return_value = "0"
 
-        # Create mock services
-        mock_dedup = AsyncMock()
-        mock_dedup.check_and_set.return_value = True
-        mock_dedup.get_cached_response.return_value = None
+    app = build_app(dedup_service=mock_dedup, kafka_producer=mock_producer)
 
-        mock_producer = AsyncMock()
-        mock_producer.produce_transaction.return_value = "0"
-
-        # Set services
-        transactions.set_services(mock_dedup, mock_producer)
-
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post(
             "/transactions", json=valid_transaction, headers=headers_with_api_key
         )
 
-        assert response.status_code == status.HTTP_202_ACCEPTED
-        data = response.json()
-        assert data["composite_key"] == f"{valid_transaction['application_number']}:*"
-        assert "ingested_at" in data
-        assert data["correlation_id"] == headers_with_api_key["X-Correlation-ID"]
-        assert data["trace_id"] == headers_with_api_key["X-Trace-ID"]
+    assert response.status_code == status.HTTP_202_ACCEPTED
+    data = response.json()
+    assert data["composite_key"].startswith(valid_transaction["application_number"])
+    assert "ingested_at" in data
+    assert data["correlation_id"] == headers_with_api_key["X-Correlation-ID"]
+    assert data["trace_id"] == headers_with_api_key["X-Trace-ID"]
 
 
 @pytest.mark.asyncio
@@ -84,47 +103,37 @@ async def test_ingest_duplicate_transaction(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
     """Test duplicate transaction returns 409 Conflict."""
-    from httpx import AsyncClient
+    mock_dedup = AsyncMock()
+    mock_dedup.check_and_set.return_value = False  # Duplicate!
+    mock_dedup.get_cached_response.return_value = None
 
-    from src.api.routers import transactions
+    mock_producer = AsyncMock()
+    app = build_app(dedup_service=mock_dedup, kafka_producer=mock_producer)
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        # Create mock services
-        mock_dedup = AsyncMock()
-        mock_dedup.check_and_set.return_value = False  # Duplicate!
-        mock_dedup.get_cached_response.return_value = None
-
-        mock_producer = AsyncMock()
-
-        # Set services
-        transactions.set_services(mock_dedup, mock_producer)
-
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post(
             "/transactions", json=valid_transaction, headers=headers_with_api_key
         )
 
-        assert response.status_code == status.HTTP_409_CONFLICT
-        assert "Duplicate transaction" in response.json()["detail"]
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert "Duplicate transaction" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
 async def test_ingest_missing_api_key(valid_transaction: dict[str, Any]) -> None:
     """Test missing API key returns 401 Unauthorized."""
-    from httpx import AsyncClient
+    app = build_app(dedup_service=AsyncMock(), kafka_producer=AsyncMock())
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post("/transactions", json=valid_transaction)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
-        assert "X-API-Key header required" in response.json()["detail"]
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert "X-API-Key header required" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
 async def test_ingest_missing_required_field(headers_with_api_key: dict[str, str]) -> None:
-    """Test missing required field returns 422 Unprocessable Entity."""
-    from httpx import AsyncClient
-
-    # Missing application_number
+    """Test missing required field (application_number) returns 422."""
     invalid_transaction = {
         "request_id": "REQ-001",
         "transunion_score": 720,
@@ -134,13 +143,14 @@ async def test_ingest_missing_required_field(headers_with_api_key: dict[str, str
         "employment_type": "Salaried",
         "product_type": "PersonalLoan",
     }
+    app = build_app(dedup_service=AsyncMock(), kafka_producer=AsyncMock())
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post(
             "/transactions", json=invalid_transaction, headers=headers_with_api_key
         )
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
 @pytest.mark.asyncio
@@ -148,17 +158,37 @@ async def test_ingest_invalid_credit_score(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
     """Test invalid credit score (outside 300-900 range) returns 422."""
-    from httpx import AsyncClient
+    bad = valid_transaction.copy()
+    bad["transunion_score"] = 250  # Below minimum
 
-    invalid_transaction = valid_transaction.copy()
-    invalid_transaction["transunion_score"] = 250  # Below minimum
+    app = build_app(dedup_service=AsyncMock(), kafka_producer=AsyncMock())
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.post(
-            "/transactions", json=invalid_transaction, headers=headers_with_api_key
-        )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post("/transactions", json=bad, headers=headers_with_api_key)
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_ingest_credit_score_max_boundary(
+    valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
+) -> None:
+    """Test credit score at max boundary (900) succeeds → 202."""
+    mock_dedup = AsyncMock()
+    mock_dedup.check_and_set.return_value = True
+    mock_dedup.get_cached_response.return_value = None
+    mock_producer = AsyncMock()
+    mock_producer.produce_transaction.return_value = "0"
+
+    boundary = valid_transaction.copy()
+    boundary["transunion_score"] = 900  # Max allowed
+
+    app = build_app(dedup_service=mock_dedup, kafka_producer=mock_producer)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post("/transactions", json=boundary, headers=headers_with_api_key)
+
+    assert response.status_code == status.HTTP_202_ACCEPTED
 
 
 @pytest.mark.asyncio
@@ -166,64 +196,50 @@ async def test_ingest_invalid_employment_type(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
     """Test invalid employment type returns 422."""
-    from httpx import AsyncClient
+    bad = valid_transaction.copy()
+    bad["employment_type"] = "InvalidType"
 
-    invalid_transaction = valid_transaction.copy()
-    invalid_transaction["employment_type"] = "InvalidType"
+    app = build_app(dedup_service=AsyncMock(), kafka_producer=AsyncMock())
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.post(
-            "/transactions", json=invalid_transaction, headers=headers_with_api_key
-        )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post("/transactions", json=bad, headers=headers_with_api_key)
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
 @pytest.mark.asyncio
 async def test_ingest_with_idempotency_key_new(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
-    """Test ingest with idempotency key (new request) caches response."""
-    from httpx import AsyncClient
-
-    from src.api.routers import transactions
-
+    """Test ingest with idempotency key (new request) caches response → 202."""
     headers = headers_with_api_key.copy()
     headers["X-Idempotency-Key"] = "idem-001"
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        # Create mock services
-        mock_dedup = AsyncMock()
-        mock_dedup.check_and_set.return_value = True
-        mock_dedup.get_cached_response.return_value = None
-        mock_dedup.cache_idempotency_response.return_value = None
+    mock_dedup = AsyncMock()
+    mock_dedup.check_and_set.return_value = True
+    mock_dedup.get_cached_response.return_value = None
+    mock_dedup.cache_idempotency_response.return_value = None
 
-        mock_producer = AsyncMock()
-        mock_producer.produce_transaction.return_value = "0"
+    mock_producer = AsyncMock()
+    mock_producer.produce_transaction.return_value = "0"
 
-        # Set services
-        transactions.set_services(mock_dedup, mock_producer)
+    app = build_app(dedup_service=mock_dedup, kafka_producer=mock_producer)
 
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post("/transactions", json=valid_transaction, headers=headers)
 
-        assert response.status_code == status.HTTP_202_ACCEPTED
-        # Verify cache_idempotency_response was called
-        assert mock_dedup.cache_idempotency_response.called
+    assert response.status_code == status.HTTP_202_ACCEPTED
+    assert mock_dedup.cache_idempotency_response.called
 
 
 @pytest.mark.asyncio
 async def test_ingest_with_idempotency_key_cached(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
-    """Test ingest with idempotency key (cached) returns cached response."""
-    from httpx import AsyncClient
-
-    from src.api.routers import transactions
-
+    """Test ingest with cached idempotency key returns cached 202 (no Kafka call)."""
     headers = headers_with_api_key.copy()
     headers["X-Idempotency-Key"] = "idem-001"
 
-    # Mock cached response
     cached_response = {
         "composite_key": "APP-001:cached-request-id",
         "ingested_at": datetime.now(UTC).isoformat(),
@@ -232,69 +248,54 @@ async def test_ingest_with_idempotency_key_cached(
         "message": "Transaction accepted for processing",
     }
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        # Create mock services
-        mock_dedup = AsyncMock()
-        mock_dedup.get_cached_response.return_value = cached_response
+    mock_dedup = AsyncMock()
+    mock_dedup.get_cached_response.return_value = cached_response
+    mock_producer = AsyncMock()
 
-        mock_producer = AsyncMock()
+    app = build_app(dedup_service=mock_dedup, kafka_producer=mock_producer)
 
-        # Set services
-        transactions.set_services(mock_dedup, mock_producer)
-
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post("/transactions", json=valid_transaction, headers=headers)
 
-        assert response.status_code == status.HTTP_202_ACCEPTED
-        data = response.json()
-        assert data["composite_key"] == cached_response["composite_key"]
-        # Verify producer was NOT called (cached response)
-        assert not mock_producer.produce_transaction.called
+    assert response.status_code == status.HTTP_202_ACCEPTED
+    data = response.json()
+    assert data["composite_key"] == cached_response["composite_key"]
+    assert not mock_producer.produce_transaction.called  # No Kafka call on cache hit
 
 
 @pytest.mark.asyncio
 async def test_ingest_kafka_producer_unavailable(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
-    """Test Kafka producer unavailable returns 503 Service Unavailable."""
-    from httpx import AsyncClient
+    """Test Kafka producer failure returns 503 Service Unavailable."""
+    mock_dedup = AsyncMock()
+    mock_dedup.check_and_set.return_value = True
+    mock_dedup.get_cached_response.return_value = None
 
-    from src.api.routers import transactions
+    mock_producer = AsyncMock()
+    mock_producer.produce_transaction.side_effect = Exception("Kafka broker unreachable")
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        # Create mock services
-        mock_dedup = AsyncMock()
-        mock_dedup.check_and_set.return_value = True
-        mock_dedup.get_cached_response.return_value = None
+    app = build_app(dedup_service=mock_dedup, kafka_producer=mock_producer)
 
-        # Mock producer that raises exception
-        mock_producer = AsyncMock()
-        mock_producer.produce_transaction.side_effect = Exception("Kafka broker unreachable")
-
-        # Set services
-        transactions.set_services(mock_dedup, mock_producer)
-
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post(
             "/transactions", json=valid_transaction, headers=headers_with_api_key
         )
 
-        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 @pytest.mark.asyncio
 async def test_ingest_dedup_service_unavailable(
     valid_transaction: dict[str, Any], headers_with_api_key: dict[str, str]
 ) -> None:
-    """Test dedup service unavailable returns 503."""
-    from httpx import AsyncClient
+    """Test dedup service None (not initialized) returns 503."""
+    # Pass None to simulate uninitialized service
+    app = build_app(dedup_service=None, kafka_producer=None)
 
-    from src.api.routers import transactions
-
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        # Set services to None (simulating unavailable)
-        transactions._dedup_service = None  # type: ignore
-
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post(
             "/transactions", json=valid_transaction, headers=headers_with_api_key
         )
 
-        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE

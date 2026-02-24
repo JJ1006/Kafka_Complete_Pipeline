@@ -1,0 +1,115 @@
+# Default-deny for credit-platform namespace + targeted allow rules
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: credit-platform
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# Allow credit-api to receive traffic from ingress-nginx and prometheus
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-credit-api-ingress
+  namespace: credit-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: credit-api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app: prometheus
+
+---
+# Allow credit-api to reach Kafka (kafka namespace), Redis, Vault (vault namespace)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-credit-api-egress
+  namespace: credit-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: credit-api
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kafka
+      ports: [{ port: 9092, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data-store
+          podSelector:
+            matchLabels:
+              app: redis
+      ports: [{ port: 6379, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports: [{ port: 8200, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data-store
+          podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports: [{ port: 9200, protocol: TCP }]
+    # Allow DNS
+    - ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+
+---
+# data-pipeline namespace default deny
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: data-pipeline
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# Allow Logstash egress to Kafka and ES
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-logstash-egress
+  namespace: data-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: logstash
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kafka
+      ports: [{ port: 9092, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data-store
+          podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports: [{ port: 9200, protocol: TCP }]
+    - ports: [{ port: 53, protocol: UDP }]

@@ -1,10 +1,13 @@
 """Redis cache service with cache-aside pattern."""
+
 import hashlib
 import json
 from typing import Any
 
 from src.api.core.config import Settings
 from src.api.core.logging import get_logger
+from src.api.core.metrics import record_cache_access
+from src.api.core.telemetry import traced_operation
 
 logger = get_logger(__name__)
 
@@ -73,6 +76,7 @@ class CacheService:
         params_hash = hashlib.sha256(params_str.encode()).hexdigest()[:16]
         return f"cache:{prefix}:{params_hash}"
 
+    @traced_operation("cache.get_cached")
     async def get_cached(self, key: str) -> dict[str, Any] | None:
         """Get value from cache.
 
@@ -83,17 +87,22 @@ class CacheService:
             Parsed JSON dict or None if not found or Redis unavailable.
         """
         if not self.client:
+            record_cache_access(endpoint="query", operation="get", hit=False)
             return None
 
         try:
             value = await self.client.get(key)
             if value:
+                record_cache_access(endpoint="query", operation="get", hit=True)
                 return json.loads(value)
+            record_cache_access(endpoint="query", operation="get", hit=False)
             return None
         except Exception as e:
             logger.warning("cache_get_error", key=key, error=str(e))
+            record_cache_access(endpoint="query", operation="get", hit=False)
             return None
 
+    @traced_operation("cache.set_cached")
     async def set_cached(self, key: str, data: dict[str, Any], ttl: int = 60) -> bool:
         """Set value in cache with TTL.
 

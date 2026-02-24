@@ -1,0 +1,248 @@
+---
+# Prometheus alert rules for Credit Transaction Platform
+# Deploy with: kubectl apply -f infrastructure/prometheus/alerts.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alert-rules
+  namespace: observability
+data:
+  credit-platform-alerts.yaml: |
+    groups:
+      - name: credit_platform_api
+        interval: 30s
+        rules:
+          # High API error rate (> 5% errors in last 5 min)
+          - alert: HighAPIErrorRate
+            expr: |
+              (sum(rate(fastapi_requests_total{status=~"4..|5.."}[5m])) /
+               sum(rate(fastapi_requests_total[5m])) * 100) > 5
+            for: 5m
+            labels:
+              severity: warning
+              component: api
+            annotations:
+              summary: "High API error rate detected"
+              description: "API error rate is {{ $value }}% (threshold: 5%) for endpoint {{ $labels.path }}"
+
+          # High API latency (p95 > 1s)
+          - alert: HighAPILatency
+            expr: |
+              histogram_quantile(0.95, sum(rate(fastapi_requests_duration_seconds_bucket[5m])) by (le)) > 1
+            for: 5m
+            labels:
+              severity: warning
+              component: api
+            annotations:
+              summary: "High API latency detected"
+              description: "API p95 latency is {{ $value }}s (threshold: 1s)"
+
+          # API requests per second too low (possible outage)
+          - alert: LowAPIRequestRate
+            expr: |
+              sum(rate(fastapi_requests_total[1m])) < 1
+            for: 5m
+            labels:
+              severity: critical
+              component: api
+            annotations:
+              summary: "API request rate critically low"
+              description: "API receiving < 1 request/sec (possible service outage)"
+
+      - name: credit_platform_kafka
+        interval: 30s
+        rules:
+          # High Kafka consumer lag
+          - alert: HighKafkaConsumerLag
+            expr: |
+              kafka_consumer_lag_sum > 10000
+            for: 10m
+            labels:
+              severity: warning
+              component: kafka
+            annotations:
+              summary: "High Kafka consumer lag detected"
+              description: "Kafka consumer group '{{ $labels.group }}' has lag of {{ $value }} messages"
+
+          # Kafka producer failures
+          - alert: KafkaProducerFailures
+            expr: |
+              rate(kafka_produce_total{status="failure"}[5m]) > 0.1
+            for: 5m
+            labels:
+              severity: critical
+              component: kafka
+            annotations:
+              summary: "Kafka producer failures detected"
+              description: "Kafka topic '{{ $labels.topic }}' has {{ $value }} failures/sec"
+
+          # DLQ backlog growing (messages in DLQ)
+          - alert: DLQBacklogAccumulating
+            expr: |
+              increase(kafka_topic_partition_in_sync_replicas{topic="credit.transactions.dlq.v1"}[5m]) > 10
+            for: 5m
+            labels:
+              severity: warning
+              component: dlq
+            annotations:
+              summary: "DLQ backlog accumulating"
+              description: "Dead letter queue has {{ $value }} messages in last 5 minutes"
+
+      - name: credit_platform_elasticsearch
+        interval: 30s
+        rules:
+          # Elasticsearch cluster health (red)
+          - alert: ESClusterHealthRed
+            expr: |
+              elasticsearch_cluster_health_status{color="red"} == 1
+            for: 2m
+            labels:
+              severity: critical
+              component: elasticsearch
+            annotations:
+              summary: "Elasticsearch cluster health is RED"
+              description: "Elasticsearch cluster {{ $labels.cluster }} is in RED state - immediate action required"
+
+          # Elasticsearch cluster health (yellow)
+          - alert: ESClusterHealthYellow
+            expr: |
+              elasticsearch_cluster_health_status{color="yellow"} == 1
+            for: 5m
+            labels:
+              severity: warning
+              component: elasticsearch
+            annotations:
+              summary: "Elasticsearch cluster health is YELLOW"
+              description: "Elasticsearch cluster {{ $labels.cluster }} is in YELLOW state (degraded)"
+
+          # High ES query latency (p95 > 5s)
+          - alert: HighESQueryLatency
+            expr: |
+              histogram_quantile(0.95, sum(rate(es_query_duration_seconds_bucket[5m])) by (le)) > 5
+            for: 5m
+            labels:
+              severity: warning
+              component: elasticsearch
+            annotations:
+              summary: "High Elasticsearch query latency"
+              description: "ES query p95 latency is {{ $value }}s (threshold: 5s)"
+
+      - name: credit_platform_cache
+        interval: 30s
+        rules:
+          # Low cache hit rate (< 30%)
+          - alert: LowCacheHitRate
+            expr: |
+              (sum(redis_cache_hits_total) / (sum(redis_cache_hits_total) + sum(redis_cache_misses_total)) * 100) < 30
+            for: 10m
+            labels:
+              severity: warning
+              component: cache
+            annotations:
+              summary: "Low Redis cache hit rate"
+              description: "Cache hit rate is {{ $value }}% (threshold: 30%)"
+
+          # Redis unavailable
+          - alert: RedisDown
+            expr: |
+              up{job="redis"} == 0
+            for: 2m
+            labels:
+              severity: critical
+              component: redis
+            annotations:
+              summary: "Redis is down"
+              description: "Redis service is unreachable"
+
+      - name: credit_platform_infrastructure
+        interval: 30s
+        rules:
+          # High pod restart count
+          - alert: PodRestartingTooOften
+            expr: |
+              increase(kube_pod_container_status_restarts_total{pod=~"credit-api.*"}[1h]) > 5
+            for: 5m
+            labels:
+              severity: warning
+              component: k8s
+            annotations:
+              summary: "Pod restarting too frequently"
+              description: "Pod {{ $labels.pod }} restarted {{ $value }} times in last hour"
+
+          # High pod CPU usage
+          - alert: HighPodCPUUsage
+            expr: |
+              (sum(rate(container_cpu_usage_seconds_total{pod=~"credit-api.*"}[5m])) by (pod) * 100) > 80
+            for: 5m
+            labels:
+              severity: warning
+              component: k8s
+            annotations:
+              summary: "Pod CPU usage high"
+              description: "Pod {{ $labels.pod }} CPU usage is {{ $value }}% (threshold: 80%)"
+
+          # High pod memory usage
+          - alert: HighPodMemoryUsage
+            expr: |
+              (sum(container_memory_usage_bytes{pod=~"credit-api.*"}) by (pod) /
+               sum(container_spec_memory_limit_bytes{pod=~"credit-api.*"}) by (pod) * 100) > 85
+            for: 5m
+            labels:
+              severity: warning
+              component: k8s
+            annotations:
+              summary: "Pod memory usage high"
+              description: "Pod {{ $labels.pod }} memory usage is {{ $value }}% (threshold: 85%)"
+
+          # Node disk space low
+          - alert: NodeDiskSpaceLow
+            expr: |
+              (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} * 100) < 15
+            for: 5m
+            labels:
+              severity: warning
+              component: k8s
+            annotations:
+              summary: "Node disk space low"
+              description: "Node {{ $labels.node }} has {{ $value }}% disk space remaining (threshold: 15%)"
+
+      - name: credit_platform_application
+        interval: 30s
+        rules:
+          # High ingest error rate
+          - alert: HighIngestErrorRate
+            expr: |
+              (sum(rate(ingest_total{status!="success"}[5m])) /
+               sum(rate(ingest_total[5m])) * 100) > 10
+            for: 5m
+            labels:
+              severity: warning
+              component: application
+            annotations:
+              summary: "High ingest error rate"
+              description: "Ingest error rate is {{ $value }}% (threshold: 10%)"
+
+          # Deduplication check latency high
+          - alert: HighDeduplicationLatency
+            expr: |
+              histogram_quantile(0.95, sum(rate(dedup_latency_seconds_bucket[5m])) by (le)) > 0.5
+            for: 5m
+            labels:
+              severity: warning
+              component: application
+            annotations:
+              summary: "High deduplication check latency"
+              description: "Dedup p95 latency is {{ $value }}s (threshold: 0.5s)"
+
+          # Many active downloads (possible resource leak)
+          - alert: ManyActiveDownloads
+            expr: |
+              active_download_streams > 50
+            for: 5m
+            labels:
+              severity: warning
+              component: application
+            annotations:
+              summary: "Unusually high number of active downloads"
+              description: "{{ $value }} downloads active (threshold: 50) - possible resource leak"

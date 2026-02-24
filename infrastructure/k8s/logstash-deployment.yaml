@@ -66,11 +66,11 @@ data:
         ruby {
           code => "
             tx = event.get('transaction')
-            
+
             # Validate required fields
             required_fields = ['applicationNumber', 'requestId']
             missing = required_fields.select { |f| tx[f].nil? or tx[f].empty? }
-            
+
             if !missing.empty?
               event.set('[@metadata][validation_error]', \"Missing fields: #{missing.join(', ')}\")
               event.tag('_dlq')
@@ -176,12 +176,12 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
-      
+
       containers:
       - name: logstash
         image: docker.elastic.co/logstash/logstash:8.13.0
         imagePullPolicy: IfNotPresent
-        
+
         ports:
         - name: http
           containerPort: 9600
@@ -189,7 +189,7 @@ spec:
         - name: metrics
           containerPort: 9600
           protocol: TCP
-        
+
         env:
         - name: LOG_LEVEL
           value: "info"
@@ -203,7 +203,7 @@ spec:
           value: "http://elasticsearch.data-store.svc.cluster.local:9200"
         - name: TZ
           value: "UTC"
-        
+
         volumeMounts:
         - name: pipeline-config
           mountPath: /usr/share/logstash/pipeline/
@@ -211,7 +211,7 @@ spec:
         - name: config
           mountPath: /usr/share/logstash/config/
           readOnly: true
-        
+
         resources:
           requests:
             cpu: "300m"
@@ -219,7 +219,7 @@ spec:
           limits:
             cpu: "1000m"
             memory: "2Gi"
-        
+
         livenessProbe:
           httpGet:
             path: /
@@ -228,7 +228,7 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
-        
+
         readinessProbe:
           httpGet:
             path: /
@@ -237,7 +237,7 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 2
-        
+
         # Security context for container
         securityContext:
           allowPrivilegeEscalation: false
@@ -245,16 +245,16 @@ spec:
             drop:
             - ALL
           readOnlyRootFilesystem: true
-      
+
       volumes:
       - name: pipeline-config
         configMap:
           name: logstash-pipeline-config
           defaultMode: 0444
-      
+
       - name: config
         emptyDir: {}
-      
+
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

@@ -8,6 +8,8 @@ import redis.asyncio as redis
 
 from src.api.core.config import Settings
 from src.api.core.logging import get_logger
+from src.api.core.metrics import record_dedup_check
+from src.api.core.telemetry import traced_operation
 
 logger = get_logger(__name__)
 
@@ -39,6 +41,7 @@ class RedisDeduplicationService:
             await self.client.close()
             logger.info("redis_disconnected")
 
+    @traced_operation("dedup.check_and_set")
     async def check_and_set(
         self, application_number: str, request_id: str, ttl_seconds: int = 86400
     ) -> bool:
@@ -58,6 +61,8 @@ class RedisDeduplicationService:
         Raises:
             Exception: If Redis connection fails.
         """
+        import time
+
         if not self.client:
             logger.error("redis_not_connected")
             raise RuntimeError("Redis client not initialized")
@@ -67,11 +72,16 @@ class RedisDeduplicationService:
         key_hash = hashlib.sha256(composite.encode()).hexdigest()
         dedup_key = f"dedup:{key_hash}"
 
+        start_time = time.monotonic()
+
         try:
             # Atomic SET with NX (only if key doesn't exist) + EX (expiry)
             result = await self.client.set(dedup_key, "1", nx=True, ex=ttl_seconds)
 
+            duration_seconds = time.monotonic() - start_time
+
             if result:  # SET succeeded (key was new)
+                record_dedup_check(result="new", duration_seconds=duration_seconds)
                 logger.info(
                     "dedup_new_tx",
                     application_number=application_number,
@@ -80,6 +90,7 @@ class RedisDeduplicationService:
                 )
                 return True
             else:  # SET failed (key already exists)
+                record_dedup_check(result="duplicate", duration_seconds=duration_seconds)
                 logger.info(
                     "dedup_duplicate_tx",
                     application_number=application_number,
@@ -89,6 +100,8 @@ class RedisDeduplicationService:
                 return False
 
         except Exception as e:
+            duration_seconds = time.monotonic() - start_time
+            record_dedup_check(result="error", duration_seconds=duration_seconds)
             logger.error("redis_dedup_error", error=str(e), dedup_key=dedup_key, exc_info=True)
             raise
 

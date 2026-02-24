@@ -1,0 +1,21 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: logstash-kafka-scaler
+  namespace: data-pipeline
+spec:
+  scaleTargetRef:
+    name: logstash
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 60
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka-headless.kafka.svc.cluster.local:9092
+        consumerGroup: logstash-consumer-group
+        topic: credit.transactions.v1
+        lagThreshold: "1000"
+        activationLagThreshold: "100"
+        offsetResetPolicy: latest

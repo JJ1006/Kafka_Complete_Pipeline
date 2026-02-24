@@ -992,31 +992,31 @@ KEY IMPLEMENTATIONS:
     • list_by_application(app_number, page, page_size, sort_field, sort_order) → paginated
     • range_query(from_date, to_date, filters, page, page_size) → date-range with max 90 days
     • scroll_for_download(from_date, to_date, filters) → AsyncGenerator for streaming
-  
+
   - Cache Service (Redis with cache-aside):
     • get_cached(key) → dict or None (graceful if Redis down)
     • set_cached(key, data, ttl=60) → bool (don't fail if Redis down)
     • _cache_key(prefix, **kwargs) → deterministic SHA-256 key from sorted params
     • health() → (bool, status_message)
-  
+
   - Query Routers:
     1. GET /transactions/{applicationNumber}/{requestId}
        - Check Redis cache (60s TTL)
        - Miss → Elasticsearch query
        - Returns TransactionResponse or 404
-    
+
     2. GET /transactions?applicationNumber=...&page=...&pageSize=...&sort=...&order=...
        - Pagination: page (1-indexed), pageSize (1-100, default 20)
        - Sort: allowed fields (ingested_at, transunion_score, application_number)
        - Cache: 60s TTL with deterministic key
        - Returns PaginatedResponse with has_next, has_previous
-    
+
     3. GET /transactions/range?from=...&to=...&filters
        - Date range: max 90 days
        - Filters: employment_type, product_type, score_min, score_max
        - Result warning: log if > 10,000 total (suggest download)
        - Cache: 300s TTL (longer for range queries)
-    
+
     4. GET /transactions/download?from=...&to=...&format=csv|jsonl
        - Never buffers to RAM (AsyncGenerator → StreamingResponse)
        - CSV: header row + data rows, Content-Disposition attachment
@@ -1054,15 +1054,15 @@ NEXT STEP: Commit and test
   # Test exact lookup (should cache miss first time)
   curl -X GET http://localhost:8000/transactions/APP001/REQ001 \\
     -H "X-API-Key: test-key"
-  
+
   # Test list by application
   curl -X GET http://localhost:8000/transactions?applicationNumber=APP001 \\
     -H "X-API-Key: test-key"
-  
+
   # Test range query
   curl -X GET "http://localhost:8000/transactions/range?from=2025-01-01T00:00:00Z&to=2025-01-31T23:59:59Z" \\
     -H "X-API-Key: test-key"
-  
+
   # Test streaming download (CSV)
   curl -X GET "http://localhost:8000/transactions/download?from=2025-01-01T00:00:00Z&to=2025-01-31T23:59:59Z&format=csv" \\
     -H "X-API-Key: test-key" \\

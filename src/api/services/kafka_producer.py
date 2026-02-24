@@ -9,6 +9,8 @@ from fastavro import schemaless_writer
 
 from src.api.core.config import Settings
 from src.api.core.logging import get_logger
+from src.api.core.metrics import record_kafka_produce
+from src.api.core.telemetry import traced_operation
 
 logger = get_logger(__name__)
 
@@ -91,6 +93,7 @@ class KafkaProducerService:
             logger.error("schema_registry_fetch_error", error=str(e), exc_info=True)
             raise
 
+    @traced_operation("kafka.produce_transaction")
     async def produce_transaction(
         self,
         application_number: str,
@@ -114,8 +117,12 @@ class KafkaProducerService:
         Raises:
             Exception: If produce fails after retries.
         """
+        import time
+
         if not self.producer or not self.avro_schema:
             raise RuntimeError("Kafka producer not initialized or schema not available")
+
+        start_time = time.monotonic()
 
         try:
             # Build Avro record with metadata
@@ -143,6 +150,13 @@ class KafkaProducerService:
                 timestamp_ms=int(datetime.now(UTC).timestamp() * 1000),
             )
 
+            duration_seconds = time.monotonic() - start_time
+            record_kafka_produce(
+                topic=self.settings.kafka_topic_transactions,
+                status="success",
+                duration_seconds=duration_seconds,
+            )
+
             logger.info(
                 "kafka_message_produced",
                 topic=self.settings.kafka_topic_transactions,
@@ -155,6 +169,13 @@ class KafkaProducerService:
             return str(future.offset)
 
         except Exception as e:
+            duration_seconds = time.monotonic() - start_time
+            record_kafka_produce(
+                topic=self.settings.kafka_topic_transactions,
+                status="error",
+                duration_seconds=duration_seconds,
+            )
+
             logger.error(
                 "kafka_produce_error",
                 application_number=application_number,

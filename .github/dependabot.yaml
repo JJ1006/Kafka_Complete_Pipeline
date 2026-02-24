@@ -1,0 +1,52 @@
+version: 2
+updates:
+  # ── Python (pip) dependencies ─────────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "python"]
+    groups:
+      fastapi-ecosystem:
+        patterns: ["fastapi*", "uvicorn*", "pydantic*", "starlette*"]
+      observability:
+        patterns: ["opentelemetry*", "prometheus*", "structlog*"]
+      kafka-redis:
+        patterns: ["aiokafka*", "redis*", "fastavro*"]
+      elasticsearch:
+        patterns: ["elasticsearch*", "elastic*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ── Docker (base images) ──────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels: ["dependencies", "docker"]
+
+  - package-ecosystem: docker
+    directory: /src/web
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels: ["dependencies", "docker", "frontend"]
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: wednesday
+    labels: ["dependencies", "github-actions"]
+    groups:
+      github-core:
+        patterns: ["actions/*"]
+      docker-actions:
+        patterns: ["docker/*"]

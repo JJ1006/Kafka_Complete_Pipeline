@@ -1,12 +1,15 @@
 """Async Elasticsearch query service for credit transactions."""
-from datetime import datetime, timedelta, timezone
+
+from datetime import datetime
 from typing import Any
 
 from elasticsearch import Elasticsearch
-from elasticsearch.exceptions import NotFoundError, RequestError
+from elasticsearch.exceptions import NotFoundError
 
 from src.api.core.config import Settings
 from src.api.core.logging import get_logger
+from src.api.core.metrics import record_es_query
+from src.api.core.telemetry import traced_operation
 from src.api.models import PaginatedResponse, TransactionResponse
 
 logger = get_logger(__name__)
@@ -55,6 +58,7 @@ class ElasticsearchService:
             self.client.close()
             logger.info("elasticsearch_disconnected")
 
+    @traced_operation("elasticsearch.get_transaction")
     async def get_transaction(
         self, application_number: str, request_id: str
     ) -> TransactionResponse | None:
@@ -67,8 +71,12 @@ class ElasticsearchService:
         Returns:
             TransactionResponse or None if not found.
         """
+        import time
+
         if not self.client:
             raise RuntimeError("Elasticsearch not initialized")
+
+        start_time = time.monotonic()
 
         try:
             doc_id = f"{application_number}:{request_id}"
@@ -78,6 +86,11 @@ class ElasticsearchService:
             )
 
             source = response.get("_source", {})
+
+            duration_seconds = time.monotonic() - start_time
+            record_es_query(
+                operation="get_transaction", status="success", duration_seconds=duration_seconds
+            )
 
             return TransactionResponse(
                 application_number=source.get("application_number"),
@@ -100,6 +113,10 @@ class ElasticsearchService:
                 source=source.get("source", ""),
             )
         except NotFoundError:
+            duration_seconds = time.monotonic() - start_time
+            record_es_query(
+                operation="get_transaction", status="not_found", duration_seconds=duration_seconds
+            )
             logger.info(
                 "transaction_not_found",
                 application_number=application_number,
@@ -107,6 +124,10 @@ class ElasticsearchService:
             )
             return None
         except Exception as e:
+            duration_seconds = time.monotonic() - start_time
+            record_es_query(
+                operation="get_transaction", status="error", duration_seconds=duration_seconds
+            )
             logger.error(
                 "elasticsearch_get_error",
                 application_number=application_number,
@@ -116,6 +137,7 @@ class ElasticsearchService:
             )
             raise
 
+    @traced_operation("elasticsearch.list_by_application")
     async def list_by_application(
         self,
         application_number: str,
@@ -136,8 +158,12 @@ class ElasticsearchService:
         Returns:
             PaginatedResponse with transactions and pagination metadata.
         """
+        import time
+
         if not self.client:
             raise RuntimeError("Elasticsearch not initialized")
+
+        start_time = time.monotonic()
 
         # Validate inputs
         page = max(1, page)
@@ -205,6 +231,11 @@ class ElasticsearchService:
             has_next = page < total_pages
             has_previous = page > 1
 
+            duration_seconds = time.monotonic() - start_time
+            record_es_query(
+                operation="list_by_application", status="success", duration_seconds=duration_seconds
+            )
+
             return PaginatedResponse(
                 data=transactions,
                 total=total,
@@ -218,6 +249,10 @@ class ElasticsearchService:
             )
 
         except Exception as e:
+            duration_seconds = time.monotonic() - start_time
+            record_es_query(
+                operation="list_by_application", status="error", duration_seconds=duration_seconds
+            )
             logger.error(
                 "elasticsearch_list_error",
                 application_number=application_number,
@@ -284,13 +319,9 @@ class ElasticsearchService:
             if "product_type" in filters:
                 query_clauses.append({"match": {"product_type": filters["product_type"].upper()}})
             if "score_min" in filters:
-                query_clauses.append(
-                    {"range": {"transunion_score": {"gte": filters["score_min"]}}}
-                )
+                query_clauses.append({"range": {"transunion_score": {"gte": filters["score_min"]}}})
             if "score_max" in filters:
-                query_clauses.append(
-                    {"range": {"transunion_score": {"lte": filters["score_max"]}}}
-                )
+                query_clauses.append({"range": {"transunion_score": {"lte": filters["score_max"]}}})
 
             from_idx = (page - 1) * page_size
 
@@ -420,19 +451,13 @@ class ElasticsearchService:
 
         filters = filters or {}
         if "employment_type" in filters:
-            query_clauses.append(
-                {"match": {"employment_type": filters["employment_type"].upper()}}
-            )
+            query_clauses.append({"match": {"employment_type": filters["employment_type"].upper()}})
         if "product_type" in filters:
             query_clauses.append({"match": {"product_type": filters["product_type"].upper()}})
         if "score_min" in filters:
-            query_clauses.append(
-                {"range": {"transunion_score": {"gte": filters["score_min"]}}}
-            )
+            query_clauses.append({"range": {"transunion_score": {"gte": filters["score_min"]}}})
         if "score_max" in filters:
-            query_clauses.append(
-                {"range": {"transunion_score": {"lte": filters["score_max"]}}}
-            )
+            query_clauses.append({"range": {"transunion_score": {"lte": filters["score_max"]}}})
 
         query_body = {
             "query": {"bool": {"must": query_clauses}},

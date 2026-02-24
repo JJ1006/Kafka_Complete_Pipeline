@@ -8,10 +8,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.api.core.config import get_settings
 from src.api.core.logging import configure_logging, get_logger
+from src.api.core.metrics import setup_prometheus_instrumentation
+from src.api.core.telemetry import (
+    configure_tracing,
+    extract_trace_context,
+    instrument_fastapi,
+    instrument_kafka,
+    instrument_redis,
+)
 from src.api.models import ErrorResponse
 from src.api.routers import health, query, transactions
 from src.api.services.cache_service import CacheService
@@ -36,6 +45,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info("app_startup", environment=settings.app_env, service="credit-api")
     configure_logging(settings)
+
+    # Configure observability (OTel, Prometheus)
+    try:
+        configure_tracing(settings)
+        instrument_fastapi(app)
+        instrument_kafka()
+        instrument_redis()
+        logger.info("observability_configured")
+    except Exception as e:
+        logger.warning("observability_configuration_failed", error=str(e))
 
     # Initialize services
     dedup_service = RedisDeduplicationService(settings)
@@ -100,6 +119,20 @@ def create_app() -> FastAPI:
 
     # GZIP compression for responses > 1KB
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # Prometheus instrumentation (must be after middlewares, before routes)
+    try:
+        setup_prometheus_instrumentation(app)
+    except Exception as e:
+        logger.warning("prometheus_instrumentation_failed", error=str(e))
+
+    # Trace context extraction middleware
+    @app.middleware("http")
+    async def trace_context_middleware(request: Request, call_next):
+        """Extract W3C trace context from incoming requests."""
+        extract_trace_context(dict(request.headers))
+        response = await call_next(request)
+        return response
 
     # Route registration
     app.include_router(health.router)
@@ -169,12 +202,25 @@ def create_app() -> FastAPI:
 
     @app.get("/", tags=["root"], include_in_schema=False)
     async def root() -> dict[str, str]:
-        """Root endpoint.
+        """Root endpoint — redirects browser users to the SPA, returns JSON for API clients."""
+        return {"message": "Credit Transaction Platform API", "docs": "/docs", "ui": "/ui"}
 
-        Returns:
-            dict: Welcome message with API docs link.
-        """
-        return {"message": "Credit Transaction Platform API", "docs": "/docs"}
+    # ── Static files & SPA catch-all ──────────────────────────────────────────
+    import os
+
+    _spa_dir = os.path.join(os.path.dirname(__file__), "..", "..", "web", "static")
+    _spa_index = os.path.join(_spa_dir, "index.html")
+    if os.path.isdir(_spa_dir):
+        app.mount("/static", StaticFiles(directory=_spa_dir), name="spa-static")
+        logger.info("spa_static_files_mounted", directory=_spa_dir)
+
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/{path:path}", include_in_schema=False)
+    async def serve_spa(path: str = "") -> FileResponse:
+        """Serve the Vue 3 SPA for all /ui/* routes (client-side routing)."""
+        if os.path.isfile(_spa_index):
+            return FileResponse(_spa_index, media_type="text/html")
+        return JSONResponse(status_code=404, content={"detail": "SPA not built"})
 
     return app
 
