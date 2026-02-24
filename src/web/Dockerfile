@@ -8,7 +8,7 @@ COPY static/ ./static/
 RUN echo "Build step — no bundler configured, copying static assets as-is"
 
 # ── Stage 2: Nginx serving ───────────────────────────────────────────────────
-FROM nginx:1.25-alpine AS runtime
+FROM nginx:1.29-alpine AS runtime
 
 # Security: remove default site, use non-root user
 RUN rm -rf /etc/nginx/conf.d/default.conf \
