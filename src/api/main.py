@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from src.api.core.config import get_settings
 from src.api.core.logging import configure_logging, get_logger
 from src.api.models import ErrorResponse
-from src.api.routers import health, transactions, query
+from src.api.routers import health, query, transactions
 from src.api.services.cache_service import CacheService
 from src.api.services.dedup_service import RedisDeduplicationService
 from src.api.services.elasticsearch_service import ElasticsearchService
@@ -48,10 +48,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await kafka_producer.connect()
         await elasticsearch_service.connect()
         await cache_service.connect()
-        
+
         transactions.set_services(dedup_service, kafka_producer)
         query.set_services(elasticsearch_service, cache_service)
-        
+
         logger.info("all_services_initialized")
     except Exception as e:
         logger.error("service_initialization_failed", error=str(e), exc_info=True)
@@ -95,7 +95,7 @@ def create_app() -> FastAPI:
     # Trusted Host Middleware
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["localhost", "127.0.0.1", "*.creditplatform.io"],
+        allowed_hosts=["localhost", "127.0.0.1", "*.creditplatform.io", "testclient"],
     )
 
     # GZIP compression for responses > 1KB

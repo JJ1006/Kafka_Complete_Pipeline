@@ -1,12 +1,13 @@
 """Query and retrieval routers for credit transactions."""
+
 import io
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
-from src.api.core.config import Settings, get_settings
+from src.api.core.config import get_settings
 from src.api.core.logging import get_logger
 from src.api.models import PaginatedResponse, TransactionResponse
 from src.api.services.cache_service import CacheService
@@ -20,9 +21,7 @@ _elasticsearch_service: ElasticsearchService | None = None
 _cache_service: CacheService | None = None
 
 
-def set_services(
-    elasticsearch_service: ElasticsearchService, cache_service: CacheService
-) -> None:
+def set_services(elasticsearch_service: ElasticsearchService, cache_service: CacheService) -> None:
     """Set service instances for dependency injection."""
     global _elasticsearch_service, _cache_service
     _elasticsearch_service = elasticsearch_service
@@ -78,7 +77,7 @@ async def get_transaction(
 ) -> TransactionResponse:
     """GET /transactions/{applicationNumber}/{requestId} - Get a specific transaction.
 
-    Checks Redis cache first (60s TTL). 
+    Checks Redis cache first (60s TTL).
     Returns X-Cache: HIT or MISS header.
     """
     trace_id = request.headers.get("X-Trace-ID", "unknown")
@@ -160,10 +159,10 @@ async def list_transactions(
     request: Request,
     application_number: Annotated[str, Query(..., description="Application number")],
     api_key: Annotated[str, Depends(require_api_key_query)],
-    page: Annotated[int, Query(1, ge=1, description="Page number (1-indexed)")] = 1,
-    page_size: Annotated[int, Query(20, ge=1, le=100, description="Results per page")] = 20,
-    sort: Annotated[str, Query("ingested_at", description="Sort field")] = "ingested_at",
-    order: Annotated[str, Query("desc", description="Sort order")] = "desc",
+    page: Annotated[int, Query(ge=1, description="Page number (1-indexed)")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="Results per page")] = 20,
+    sort: Annotated[str, Query(description="Sort field")] = "ingested_at",
+    order: Annotated[str, Query(description="Sort order")] = "desc",
     es_service: Annotated[ElasticsearchService, Depends(get_elasticsearch_service)] = None,
     cache_service: Annotated[CacheService, Depends(get_cache_service)] = None,
 ) -> PaginatedResponse:
@@ -257,8 +256,8 @@ async def range_query(
     from_date: Annotated[str, Query(..., description="Start date (ISO 8601)")],
     to_date: Annotated[str, Query(..., description="End date (ISO 8601)")],
     api_key: Annotated[str, Depends(require_api_key_query)],
-    page: Annotated[int, Query(1, ge=1)] = 1,
-    page_size: Annotated[int, Query(20, ge=1, le=100)] = 20,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     employment_type: Annotated[str | None, Query(description="Employment type filter")] = None,
     product_type: Annotated[str | None, Query(description="Product type filter")] = None,
     score_min: Annotated[int | None, Query(ge=300, le=900)] = None,
@@ -328,7 +327,11 @@ async def range_query(
 
         # Query Elasticsearch
         result = await es_service.range_query(
-            from_date=from_dt, to_date=to_dt, filters=filters or None, page=page, page_size=page_size
+            from_date=from_dt,
+            to_date=to_dt,
+            filters=filters or None,
+            page=page,
+            page_size=page_size,
         )
 
         # Check result size
@@ -395,7 +398,7 @@ async def download_transactions(
     from_date: Annotated[str, Query(..., description="Start date (ISO 8601)")],
     to_date: Annotated[str, Query(..., description="End date (ISO 8601)")],
     api_key: Annotated[str, Depends(require_api_key_query)],
-    format: Annotated[str, Query("csv", description="Output format")] = "csv",
+    format: Annotated[str, Query(description="Output format")] = "csv",
     employment_type: Annotated[str | None, Query()] = None,
     product_type: Annotated[str | None, Query()] = None,
     score_min: Annotated[int | None, Query(ge=300, le=900)] = None,
