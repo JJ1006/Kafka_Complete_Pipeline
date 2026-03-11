@@ -1,7 +1,7 @@
 # ── Stage 1: Build stage (for future bundled assets) ────────────────────────
 # Currently the SPA is a single-file CDN-based app, so no real build needed.
 # This multi-stage setup is ready for a future Vite/Rollup build step.
-FROM node:20-alpine AS builder
+FROM node:25-alpine AS builder
 WORKDIR /build
 COPY static/ ./static/
 # Placeholder: future `npm run build` goes here
